@@ -19,6 +19,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
+import boto
 from boto import handler
 from boto.resultset import ResultSet
 from boto.s3.acl import Policy, CannedACLStrings, ACL, Grant
@@ -53,6 +54,9 @@ class Bucket:
         self.name = name
         self.connection = connection
         self.key_class = key_class
+
+    def __repr__(self):
+        return '<Bucket: %s>' % self.name
 
     def __iter__(self):
         return iter(BucketListResultSet(self))
@@ -91,8 +95,7 @@ class Bucket:
         method uses a HEAD request to check for the existance of the key.
         Returns: An instance of a Key object or None
         """
-        path = '/%s/%s' % (self.name, key_name)
-        response = self.connection.make_request('HEAD', urllib.quote(path))
+        response = self.connection.make_request('HEAD', self.name, key_name)
         if response.status == 200:
             body = response.read()
             k = self.key_class(self)
@@ -109,7 +112,10 @@ class Bucket:
             # so I have to fake it out
             response.chunked = 0
             body = response.read()
-            return None
+            if response.status == 404:
+                return None
+            else:
+                raise S3ResponseError(response.status, response.reason, body)
 
     def list(self, prefix="", delimiter=""):
         """
@@ -139,19 +145,21 @@ class Bucket:
         a legal variable in Python you have to pass maxkeys and this
         method will munge it (Ugh!)
         """
-        path = '/%s' % urllib.quote(self.name)
         l = []
         for k,v in params.items():
             if  k == 'maxkeys':
                 k = 'max-keys'
+            if isinstance(v, unicode):
+                v = v.encode('utf-8')
             l.append('%s=%s' % (urllib.quote(k), urllib.quote(str(v))))
-        s = '&'.join(l)
-        if s:
-            path = path + '?%s' % s
-        response = self.connection.make_request('GET', path, headers)
+        if len(l):
+            s = '&'.join(l)
+        else:
+            s = None
+        response = self.connection.make_request('GET', self.name,
+                headers=headers, query_args=s)
         body = response.read()
-        if self.connection.debug > 1:
-            print body
+        boto.log.debug(body)
         if response.status == 200:
             rs = ResultSet([('Contents', self.key_class),
                             ('CommonPrefixes', Prefix)])
@@ -165,63 +173,38 @@ class Bucket:
         return self.key_class(self, key_name)
 
     def generate_url(self, expires_in, method='GET', headers=None):
-        return self.connection.generate_url(expires_in, method,
-                                            '/'+self.name, headers)
+        return self.connection.generate_url(expires_in, method, self.name, headers=headers)
 
     def delete_key(self, key_name):
-        # for backward compatibility, previous version expected a Key object
-        if isinstance(key_name, self.key_class):
-            key_name = key_name.name
-        path = '/%s/%s' % (self.name, key_name)
-        response = self.connection.make_request('DELETE',
-                                                urllib.quote(path))
+        response = self.connection.make_request('DELETE', self.name, key_name)
         body = response.read()
         if response.status != 204:
             raise S3ResponseError(response.status, response.reason, body)
 
-    def set_canned_acl(self, acl_str, key_name=None):
+    def set_canned_acl(self, acl_str, key_name=''):
         assert acl_str in CannedACLStrings
-        if key_name:
-            path = '/%s/%s' % (self.name, key_name)
-        else:
-            path = '/%s' % self.name
-        path = urllib.quote(path) + '?acl'
-        headers = {'x-amz-acl': acl_str}
-        response = self.connection.make_request('PUT', path, headers)
+        response = self.connection.make_request('PUT', self.name, key_name,
+                headers={'x-amz-acl': acl_str}, query_args='acl')
         body = response.read()
         if response.status != 200:
             raise S3ResponseError(response.status, response.reason, body)
 
-    def set_xml_acl(self, acl_str, key_name=None):
-        if key_name:
-            path = '/%s/%s' % (self.name, key_name)
-        else:
-            path = '/%s' % self.name
-        path = urllib.quote(path) + '?acl'
-        response = self.connection.make_request('PUT', path, data=acl_str)
+    def set_xml_acl(self, acl_str, key_name=''):
+        response = self.connection.make_request('PUT', self.name, key_name,
+                data=acl_str, query_args='acl')
         body = response.read()
         if response.status != 200:
             raise S3ResponseError(response.status, response.reason, body)
 
-    def set_acl(self, acl_or_str, key_name=None):
-        # just in case user passes a Key object rather than key name
-        if isinstance(key_name, self.key_class):
-            key_name = key_name.name
+    def set_acl(self, acl_or_str, key_name=''):
         if isinstance(acl_or_str, Policy):
             self.set_xml_acl(acl_or_str.to_xml(), key_name)
         else:
             self.set_canned_acl(acl_or_str, key_name)
-            
-    def get_acl(self, key_name=None):
-        # just in case user passes a Key object rather than key name
-        if isinstance(key_name, self.key_class):
-            key_name = key_name.name
-        if key_name:
-            path = '/%s/%s' % (self.name, key_name)
-        else:
-            path = '/%s' % self.name
-        path = urllib.quote(path) + '?acl'
-        response = self.connection.make_request('GET', path)
+
+    def get_acl(self, key_name=''):
+        response = self.connection.make_request('GET', self.name, key_name,
+                query_args='acl')
         body = response.read()
         if response.status == 200:
             policy = Policy(self)
@@ -291,17 +274,19 @@ class Bucket:
 
     def list_grants(self):
         policy = self.get_acl()
-        return policy.acl.grants()
+        return policy.acl.grants
+
+#    def get_location(self):
+#        location = _XmlInterpreter(
+#                string_attrs={'LocationConstraint': 'location'})
+#        body = self.connection.checked_request(location, self,
+#                'GET', self.name, query_args='location').location
+#        return parse_xml_string(body, location, self)
 
     def enable_logging(self, target_bucket, target_prefix=''):
-        if isinstance(target_bucket, Bucket):
-            target_bucket_name = target_bucket.name
-        else:
-            target_bucket_name = target_bucket
-        path = '/%s' % self.name
-        path = urllib.quote(path) + '?logging'
-        body = self.BucketLoggingBody % (target_bucket_name, target_prefix)
-        response = self.connection.make_request('PUT', path, data=body)
+        body = self.BucketLoggingBody % (target_bucket, target_prefix)
+        response = self.connection.make_request('PUT', self.name, data=body,
+                query_args='logging')
         body = response.read()
         if response.status == 200:
             return body
@@ -309,20 +294,18 @@ class Bucket:
             raise S3ResponseError(response.status, response.reason, body)
         
     def disable_logging(self):
-        path = '/%s' % self.name
-        path = urllib.quote(path) + '?logging'
         body = self.EmptyBucketLoggingBody
-        response = self.connection.make_request('PUT', path, data=body)
+        response = self.connection.make_request('PUT', self.name, data=body,
+                query_args='logging')
         body = response.read()
         if response.status == 200:
             return body
         else:
             raise S3ResponseError(response.status, response.reason, body)
-        
+
     def get_logging_status(self):
-        path = '/%s' % self.name
-        path = urllib.quote(path) + '?logging'
-        response = self.connection.make_request('GET', path)
+        response = self.connection.make_request('GET', self.name,
+                query_args='logging')
         body = response.read()
         if response.status == 200:
             return body

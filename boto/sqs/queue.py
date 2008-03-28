@@ -91,44 +91,6 @@ class Queue:
         """
         return self.connection.set_queue_attribute(self.id, attribute, value)
 
-    def add_grant(self, permission, email_address=None, user_id=None):
-        """
-        Add a grant to this queue.
-        Inputs:
-            permission - The permission being granted.  One of "ReceiveMessage", "SendMessage" or "FullControl"
-            email_address - the email address of the grantee.  If email_address is supplied, user_id should be None
-            user_id - The ID of the grantee.  If user_id is supplied, email_address should be None
-        Returns:
-            Boolean True if successful, otherwise False
-        """
-        return self.connection.add_grant(self.id, permission, email_address, user_id)
-
-    def remove_grant(self, permission, email_address=None, user_id=None):
-        """
-        Remove a grant from this queue.
-        Inputs:
-            permission - The permission being removed.  One of "ReceiveMessage", "SendMessage" or "FullControl"
-            email_address - the email address of the grantee.  If email_address is supplied, user_id should be None
-            user_id - The ID of the grantee.  If user_id is supplied, email_address should be None
-        Returns:
-            Boolean True if successful, otherwise False
-        """
-        return self.connection.remove_grant(self.id, permission, email_address, user_id)
-
-    def list_grants(self, permission=None, email_address=None, user_id=None):
-        """
-        List the grants to this queue.
-        Inputs:
-            permission - The permission granted.  One of "ReceiveMessage", "SendMessage" or "FullControl".
-                         If supplied, only grants that allow this permission will be returned.
-            email_address - the email address of the grantee.  If supplied, only grants related to this email
-                            address will be returned
-            user_id - The ID of the grantee.  If supplied, only grants related to his user_id will be returned.
-        Returns:
-            A string containing the XML Response elements describing the grants.
-        """
-        return self.connection.list_grants(self.id, permission, email_address, user_id)
-
     def get_timeout(self):
         """
         Get the visibility timeout for the queue.
@@ -175,15 +137,7 @@ class Queue:
         Returns:
             None
         """
-        path = '%s/back' % self.id
-        message.queue = self
-        response = self.connection.make_request('PUT', path, None,
-                                                message.get_body_encoded())
-        body = response.read()
-        if response.status >= 300:
-            raise SQSError(response.status, response.reason, body)
-        handler = XmlHandler(message, self.connection)
-        xml.sax.parseString(body, handler)
+        self.connection.send_message(self.url, message.get_body_encoded())
         return None
 
     def new_message(self, body=''):
@@ -191,28 +145,13 @@ class Queue:
 
     # get a variable number of messages, returns a list of messages
     def get_messages(self, num_messages=1, visibility_timeout=None):
-        path = '%s/front?NumberOfMessages=%d' % (self.id, num_messages)
-        if visibility_timeout:
-            path = '%s&VisibilityTimeout=%d' % (path, visibility_timeout)
-        response = self.connection.make_request('GET', path)
-        body = response.read()
-        if response.status >= 300:
-            raise SQSError(response.status, response.reason, body)
-        rs = ResultSet([('Message', self.message_class)])
-        h = XmlHandler(rs, self)
-        xml.sax.parseString(body, h)
-        return rs
+        return self.connection.receive_message(self.url, number_messages=num_messages, visibility_timeout=visibility_timeout, message_class=self.message_class)
 
     def delete_message(self, message):
-        path = '%s/%s' % (self.id, message.id)
-        response = self.connection.make_request('DELETE', path)
-        body = response.read()
-        if response.status >= 300:
-            raise SQSError(response.status, response.reason, body)
-        rs = ResultSet()
-        h = XmlHandler(rs, self.connection)
-        xml.sax.parseString(body, h)
-        return rs
+        return self.connection.delete_message(self.url, message.id, message.receipt_handle)
+
+    def delete(self):
+        return self.connection.delete_queue(self)
 
     def clear(self, page_size=100, vtimeout=10):
         """Utility function to remove all messages from a queue"""
@@ -225,7 +164,7 @@ class Queue:
             l = self.get_messages(page_size, vtimeout)
         return n
 
-    def count(self, page_size=100, vtimeout=10):
+    def count(self, page_size=10, vtimeout=10):
         """
         Utility function to count the number of messages in a queue.
         Note: This function now calls GetQueueAttributes to obtain
@@ -234,7 +173,7 @@ class Queue:
         a = self.get_attributes('ApproximateNumberOfMessages')
         return a['ApproximateNumberOfMessages']
     
-    def count_slow(self, page_size=100, vtimeout=10):
+    def count_slow(self, page_size=10, vtimeout=10):
         """
         Deprecated.  This is the old 'count' method that actually counts
         the messages by reading them all.  This gives an accurate count but

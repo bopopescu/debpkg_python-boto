@@ -43,6 +43,10 @@ import sha
 import urllib, urllib2
 import imp
 import popen2, os, StringIO
+import time
+import logging.handlers
+import boto
+import tempfile
 
 METADATA_PREFIX = 'x-amz-meta-'
 AMAZON_HEADER_PREFIX = 'x-amz-'
@@ -90,6 +94,8 @@ def canonical_string(method, path, headers, expires=None):
         buf += "?logging"
     elif re.search("[&?]torrent($|=|&)", path):
         buf += "?torrent"
+    elif re.search("[&?]location($|=|&)", path):
+        buf += "?location"
 
     return buf
 
@@ -117,39 +123,48 @@ def get_aws_metadata(headers):
             del headers[hkey]
     return metadata
 
+def retry_url(url):
+    for i in range(0, 10):
+        try:
+            req = urllib2.Request(url)
+            resp = urllib2.urlopen(req)
+            return resp.read()
+        except:
+            boto.log.exception('Caught exception reading instance data')
+            time.sleep(2**i)
+    boto.log.error('Unable to read instance data, giving up')
+    return ''
+    
 def get_instance_metadata(version='latest'):
     metadata = {}
-    try:
-        url = 'http://169.254.169.254/%s/meta-data/' % version
-        s = urllib.urlopen(url)
-        md_fields = s.read().split('\n')
+    url = 'http://169.254.169.254/%s/meta-data/' % version
+    data = retry_url(url)
+    if data:
+        md_fields = data.split('\n')
         for md in md_fields:
-            md_url = url + md
-            s = urllib.urlopen(md_url)
-            val = s.read()
+            val = retry_url(url + md)
             if val.find('\n') > 0:
                 val = val.split('\n')
             metadata[md] = val
-    except:
-        print 'problem reading metadata'
     return metadata
 
 def get_instance_userdata(version='latest', sep=None):
-    user_data = None
-    try:
-        url = 'http://169.254.169.254/%s/user-data/' % version
-        s = urllib.urlopen(url)
-        user_data = s.read()
+    url = 'http://169.254.169.254/%s/user-data/' % version
+    user_data = retry_url(url)
+    if user_data:
         if sep:
             l = user_data.split(sep)
             user_data = {}
             for nvpair in l:
                 t = nvpair.split('=')
                 user_data[t[0].strip()] = t[1].strip()
-    except:
-        print 'problem reading metadata'
     return user_data
     
+def get_ts(ts=None):
+    if not ts:
+        ts = time.gmtime()
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', ts)
+
 def find_class(module_name, class_name):
     modules = module_name.split('.')
     path = None
@@ -169,30 +184,57 @@ def update_dme(username, password, dme_id, ip_address):
     s = urllib2.urlopen(dme_url % (username, password, dme_id, ip_address))
     return s.read()
 
+def fetch_file(uri, file=None):
+    """
+    Fetch a file based on the URI provided. If you do not pass in a file pointer
+    a tempfile.NamedTemporaryFile, or None if the file could not be 
+    retrieved is returned.
+    The URI can be either an HTTP url, or "s3:bucket_name/key_name"
+    """
+    boto.log.info('Fetching %s' % uri)
+    if file == None:
+        file = tempfile.NamedTemporaryFile()
+    try:
+        working_dir = boto.config.get("General", "working_dir")
+        if uri.startswith('s3:'):
+            bucket_name, key_name = uri[len('s3:'):].split('/')
+            c = boto.connect_s3()
+            bucket = c.get_bucket(bucket_name)
+            key = bucket.get_key(key_name)
+            key.get_contents_to_file(file)
+        elif uri.startswith('http'):
+            s = urllib2.urlopen(uri)
+            file.write(s.read())
+        file.seek(0)
+    except:
+        boto.log.exception('Problem Retrieving file: %s' % uri)
+        file = None
+    return file
+
 class ShellCommand(object):
 
-    def __init__(self, command, log_fp=None):
+    def __init__(self, command, wait=True):
         self.exit_code = 0
         self.command = command
-        if log_fp:
-            self.log_fp = log_fp
-        else:
-            self.log_fp = StringIO.StringIO()
+        self.log_fp = StringIO.StringIO()
+        self.wait = wait
         self.run()
 
     def run(self):
-        self.log_fp.write('running:\n%s\n' % self.command)
-        p = popen2.Popen4(self.command)
-        status = p.wait()
-        self.log_fp.write(p.fromchild.read())
-        self.log_fp.write('\n')
-        self.exit_code = os.WEXITSTATUS(status)
-        return self.exit_code
+        boto.log.info('running:%s' % self.command)
+        self.process = popen2.Popen4(self.command)
+        if(self.wait):
+            return self.getStatus()
 
     def setReadOnly(self, value):
         raise AttributeError
 
     def getStatus(self):
+        if(not self.exit_code):
+            status = self.process.wait()
+            self.log_fp.write(self.process.fromchild.read())
+            boto.log.info(self.log_fp.getvalue())
+            self.exit_code = os.WEXITSTATUS(status)
         return self.exit_code
 
     status = property(getStatus, setReadOnly, None, 'The exit code for the command')
@@ -201,4 +243,180 @@ class ShellCommand(object):
         return self.log_fp.getvalue()
 
     output = property(getOutput, setReadOnly, None, 'The STDIN and STDERR output of the command')
+
+class AuthSMTPHandler(logging.handlers.SMTPHandler):
+    """
+    This class extends the SMTPHandler in the standard Python logging module
+    to accept a username and password on the constructor and to then use those
+    credentials to authenticate with the SMTP server.  To use this, you could
+    add something like this in your boto config file:
     
+    [handler_hand07]
+    class=boto.utils.AuthSMTPHandler
+    level=WARN
+    formatter=form07
+    args=('localhost', 'username', 'password', 'from@abc', ['user1@abc', 'user2@xyz'], 'Logger Subject')
+    """
+
+    def __init__(self, mailhost, username, password, fromaddr, toaddrs, subject):
+        """
+        Initialize the handler.
+
+        We have extended the constructor to accept a username/password
+        for SMTP authentication.
+        """
+        logging.handlers.SMTPHandler.__init__(self, mailhost, fromaddr, toaddrs, subject)
+        self.username = username
+        self.password = password
+        
+    def emit(self, record):
+        """
+        Emit a record.
+
+        Format the record and send it to the specified addressees.
+        It would be really nice if I could add authorization to this class
+        without having to resort to cut and paste inheritance but, no.
+        """
+        try:
+            import smtplib
+            try:
+                from email.Utils import formatdate
+            except:
+                formatdate = self.date_time
+            port = self.mailport
+            if not port:
+                port = smtplib.SMTP_PORT
+            smtp = smtplib.SMTP(self.mailhost, port)
+            smtp.login(self.username, self.password)
+            msg = self.format(record)
+            msg = "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\n\r\n%s" % (
+                            self.fromaddr,
+                            string.join(self.toaddrs, ","),
+                            self.getSubject(record),
+                            formatdate(), msg)
+            smtp.sendmail(self.fromaddr, self.toaddrs, msg)
+            smtp.quit()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            self.handleError(record)
+
+class LRUCache(dict):
+    """A dictionary-like object that stores only a certain number of items, and
+    discards its least recently used item when full.
+    
+    >>> cache = LRUCache(3)
+    >>> cache['A'] = 0
+    >>> cache['B'] = 1
+    >>> cache['C'] = 2
+    >>> len(cache)
+    3
+    
+    >>> cache['A']
+    0
+    
+    Adding new items to the cache does not increase its size. Instead, the least
+    recently used item is dropped:
+    
+    >>> cache['D'] = 3
+    >>> len(cache)
+    3
+    >>> 'B' in cache
+    False
+    
+    Iterating over the cache returns the keys, starting with the most recently
+    used:
+    
+    >>> for key in cache:
+    ...     print key
+    D
+    A
+    C
+
+    This code is based on the LRUCache class from Genshi which is based on
+    Mighty's LRUCache from ``myghtyutils.util``, written
+    by Mike Bayer and released under the MIT license (Genshi uses the
+    BSD License). See:
+
+      http://svn.myghty.org/myghtyutils/trunk/lib/myghtyutils/util.py
+    """
+
+    class _Item(object):
+        def __init__(self, key, value):
+            self.previous = self.next = None
+            self.key = key
+            self.value = value
+        def __repr__(self):
+            return repr(self.value)
+
+    def __init__(self, capacity):
+        self._dict = dict()
+        self.capacity = capacity
+        self.head = None
+        self.tail = None
+
+    def __contains__(self, key):
+        return key in self._dict
+
+    def __iter__(self):
+        cur = self.head
+        while cur:
+            yield cur.key
+            cur = cur.next
+
+    def __len__(self):
+        return len(self._dict)
+
+    def __getitem__(self, key):
+        item = self._dict[key]
+        self._update_item(item)
+        return item.value
+
+    def __setitem__(self, key, value):
+        item = self._dict.get(key)
+        if item is None:
+            item = self._Item(key, value)
+            self._dict[key] = item
+            self._insert_item(item)
+        else:
+            item.value = value
+            self._update_item(item)
+            self._manage_size()
+
+    def __repr__(self):
+        return repr(self._dict)
+
+    def _insert_item(self, item):
+        item.previous = None
+        item.next = self.head
+        if self.head is not None:
+            self.head.previous = item
+        else:
+            self.tail = item
+        self.head = item
+        self._manage_size()
+
+    def _manage_size(self):
+        while len(self._dict) > self.capacity:
+            olditem = self._dict[self.tail.key]
+            del self._dict[self.tail.key]
+            if self.tail != self.head:
+                self.tail = self.tail.previous
+                self.tail.next = None
+            else:
+                self.head = self.tail = None
+
+    def _update_item(self, item):
+        if self.head == item:
+            return
+
+        previous = item.previous
+        previous.next = item.next
+        if item.next is not None:
+            item.next.previous = previous
+        else:
+            self.tail = previous
+
+        item.previous = None
+        item.next = self.head
+        self.head.previous = self.head = item

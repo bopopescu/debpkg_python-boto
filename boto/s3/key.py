@@ -30,8 +30,9 @@ import time
 import base64
 import boto
 import boto.utils
-from boto.exception import S3ResponseError, S3DataError
+from boto.exception import S3ResponseError, S3DataError, BotoClientError
 from boto.s3.user import User
+from boto import UserAgent, config
 
 class Key:
 
@@ -52,6 +53,14 @@ class Key:
         self.md5 = None
         self.base64md5 = None
         self.path = None
+        self.resp = None
+        self.mode = None
+
+    def __repr__(self):
+        if self.bucket:
+            return '<Key: %s,%s>' % (self.bucket.name, self.name)
+        else:
+            return '<Key: None,%s>' % self.name
 
     def __getattr__(self, name):
         if name == 'key':
@@ -64,6 +73,72 @@ class Key:
             self.__dict__['name'] = value
         else:
             self.__dict__[name] = value
+
+    def __iter__(self):
+        return self
+
+    def open_read(self, headers=None):
+        if self.resp == None:
+            self.mode = 'r'
+            self.resp = self.bucket.connection.make_request('GET', self.bucket.name, self.name, headers)
+            if self.resp.status < 199 or self.resp.status > 299:
+                raise S3ResponseError(self.resp.status, self.resp.reason)
+            response_headers = self.resp.msg
+            self.metadata = boto.utils.get_aws_metadata(response_headers)
+            for name,value in response_headers.items():
+                if name.lower() == 'content-length':
+                    self.size = int(value)
+                elif name.lower() == 'etag':
+                    self.etag = value
+                elif name.lower() == 'content-type':
+                    self.content_type = value
+                elif name.lower() == 'last-modified':
+                    self.last_modified = value
+
+    def open_write(self, headers=None):
+        raise BotoClientError('Not Implemented')
+
+    def open(self, mode='r', headers=None):
+        if mode == 'r':
+            self.mode = 'r'
+            self.open_read()
+        elif mode == 'w':
+            self.mode = 'w'
+            self.open_write()
+        else:
+            raise BotoClientError('Invalid mode: %s' % mode)
+
+    def close(self):
+        if self.resp:
+            self.resp.read()
+        self.resp = None
+        self.mode = None
+    
+    def next(self):
+        """
+        By providing a next method, the key object supports use as an iterator.
+        For example, you can now say:
+
+        for bytes in key:
+            write bytes to a file or whatever
+
+        All of the HTTP connection stuff is handled for you.
+        """
+        self.open_read()
+        data = self.resp.read(self.BufferSize)
+        if not data:
+            self.close()
+            raise StopIteration
+        return data
+
+    def read(self, size=0):
+        if size == 0:
+            size = self.BufferSize
+        self.open_read()
+        data = self.resp.read(size)
+        if not data:
+            self.close()
+        return data
 
     def startElement(self, name, attrs, connection):
         if name == 'Owner':
@@ -80,7 +155,7 @@ class Key:
         elif name == 'LastModified':
             self.last_modified = value
         elif name == 'Size':
-            self.size = value
+            self.size = int(value)
         elif name == 'StorageClass':
             self.storage_class = value
         elif name == 'Owner':
@@ -89,13 +164,13 @@ class Key:
             setattr(self, name, value)
 
     def exists(self):
-        return bool(self.bucket.lookup(self.name))
+        return bool(self.bucket.lookup(self.name.encode('utf-8')))
 
     def delete(self):
-        return self.bucket.delete_key(self.name)
+        return self.bucket.delete_key(self.name.encode('utf-8'))
 
     def get_metadata(self, name):
-        return self.metadata[name]
+        return self.metadata.get(name)
 
     def set_metadata(self, name, value):
         self.metadata[name] = value
@@ -103,47 +178,30 @@ class Key:
     def update_metadata(self, d):
         self.metadata.update(d)
     
+    # convenience methods for setting/getting ACL
+    def set_acl(self, acl_str):
+        if self.bucket != None:
+            self.bucket.set_acl(acl_str, self.name)
+
+    def get_acl(self):
+        if self.bucket != None:
+            return self.bucket.get_acl(self.name)
+
     def generate_url(self, expires_in, method='GET',
                      headers=None, query_auth=True):
-        path = '/%s/%s' % (self.bucket.name, self.name)
-        path = urllib.quote(path)
         return self.bucket.connection.generate_url(expires_in, method,
-                                                   path, headers, query_auth)
-    
+                                                   self.bucket.name, self.name,
+                                                   headers, query_auth)
+
     def send_file(self, fp, headers=None, cb=None, num_cb=10):
-        http_conn = self.bucket.connection.connection
-        if not headers:
-            headers = {}
-        headers['Content-MD5'] = self.base64md5
-        if headers.has_key('Content-Type'):
-            self.content_type = headers['Content-Type']
-        elif self.path:
-            self.content_type = mimetypes.guess_type(self.path)[0]
-            if self.content_type == None:
-                self.content_type = self.DefaultContentType
-            headers['Content-Type'] = self.content_type
-        else:
-            headers['Content-Type'] = self.content_type
-        headers['Content-Length'] = self.size
-        headers['Expect'] = '100-Continue'
-        final_headers = boto.utils.merge_meta(headers, self.metadata);
-        path = '/%s/%s' % (self.bucket.name, self.name)
-        path = urllib.quote(path)
-        self.bucket.connection.add_aws_auth_header(final_headers, 'PUT', path)
-        #the prepending of the protocol and true host must occur after
-        #the authentication header is computed (line above). The
-        #authentication includes the path, which for authentication is
-        #only the bucket and key
-        if self.bucket.connection.use_proxy:
-            path = self.bucket.connection.prefix_proxy_to_path(path)
-        try:
+        def sender(http_conn, method, path, data, headers):
             http_conn.putrequest('PUT', path)
-            for key in final_headers:
-                http_conn.putheader(key,final_headers[key])
+            for key in headers:
+                http_conn.putheader(key, headers[key])
             http_conn.endheaders()
+            fp.seek(0)
             save_debug = self.bucket.connection.debug
-            if self.bucket.connection.debug == 1:
-                self.bucket.connection.set_debug(0)
+            self.bucket.connection.debug = 0
             if cb:
                 if num_cb > 2:
                     cb_count = self.size / self.BufferSize / (num_cb-2)
@@ -165,25 +223,40 @@ class Key:
                 cb(total_bytes, self.size)
             response = http_conn.getresponse()
             body = response.read()
-            self.bucket.connection.set_debug(save_debug)
-        except socket.error, (value, message):
-            if value in self.bucket.connection.socket_exception_values:
-                print 'Caught %d:%s socket error, aborting' % (value, message)
-                raise
-            print 'Caught a socket error, trying to recover'
-            self.bucket.connection.make_http_connection()
             fp.seek(0)
-            self.send_file(fp, headers)
-            return
-        except Exception, e:
-            print 'Caught an unexpected exception'
-            self.bucket.connection.make_http_connection()
-            raise e
-        if response.status != 200:
-            raise S3ResponseError(response.status, response.reason, body)
-        self.etag = response.getheader('etag')
-        if self.etag != '"%s"'  % self.md5:
-            raise S3DataError('Injected data did not return correct MD5')
+            self.bucket.connection.debug = save_debug
+            if response.status == 500 or response.status == 503 or \
+                    response.getheader('location'):
+                # we'll try again
+                return response
+            elif response.status >= 200 and response.status <= 299:
+                self.etag = response.getheader('etag')
+                if self.etag != '"%s"'  % self.md5:
+                    raise S3DataError('ETag from S3 did not match computed MD5')
+                return response
+            else:
+                raise S3ResponseError(response.status, response.reason, body)
+
+        if not headers:
+            headers = {}
+        else:
+            headers = headers.copy()
+        headers['User-Agent'] = UserAgent
+        headers['Content-MD5'] = self.base64md5
+        if headers.has_key('Content-Type'):
+            self.content_type = headers['Content-Type']
+        elif self.path:
+            self.content_type = mimetypes.guess_type(self.path)[0]
+            if self.content_type == None:
+                self.content_type = self.DefaultContentType
+            headers['Content-Type'] = self.content_type
+        else:
+            headers['Content-Type'] = self.content_type
+        headers['Content-Length'] = self.size
+        headers['Expect'] = '100-Continue'
+        headers = boto.utils.merge_meta(headers, self.metadata)
+        return self.bucket.connection.make_request('PUT', self.bucket.name,
+                self.name, headers, sender=sender)
 
     def _compute_md5(self, fp):
         m = md5.new()
@@ -258,22 +331,6 @@ class Key:
         fp.close()
 
     def get_file(self, fp, headers=None, cb=None, num_cb=10):
-        path = '/%s/%s' % (self.bucket.name, self.name)
-        path = urllib.quote(path)
-        resp = self.bucket.connection.make_request('GET', path, headers)
-        if resp.status < 199 or resp.status > 299:
-            raise S3ResponseError(resp.status, resp.reason)
-        response_headers = resp.msg
-        self.metadata = boto.utils.get_aws_metadata(response_headers)
-        for key in response_headers.keys():
-            if key.lower() == 'content-length':
-                self.size = int(response_headers[key])
-            elif key.lower() == 'etag':
-                self.etag = response_headers[key]
-            elif key.lower() == 'content-type':
-                self.content_type = response_headers[key]
-            elif key.lower() == 'last-modified':
-                self.last_modified = response_headers[key]
         if cb:
             if num_cb > 2:
                 cb_count = self.size / self.BufferSize / (num_cb-2)
@@ -283,21 +340,20 @@ class Key:
             cb(total_bytes, self.size)
         save_debug = self.bucket.connection.debug
         if self.bucket.connection.debug == 1:
-            self.bucket.connection.set_debug(0)
-        l = resp.read(self.BufferSize)
-        while len(l) > 0:
-            fp.write(l)
+            self.bucket.connection.debug = 0
+        self.open('r', headers)
+        for bytes in self:
+            fp.write(bytes)
             if cb:
-                total_bytes += len(l)
+                total_bytes += len(bytes)
                 i += 1
                 if i == cb_count:
                     cb(total_bytes, self.size)
                     i = 0
-            l = resp.read(self.BufferSize)
         if cb:
             cb(total_bytes, self.size)
-        resp.read()
-        self.bucket.connection.set_debug(save_debug)
+        self.close()
+        self.bucket.connection.debug = save_debug
 
     def get_contents_to_file(self, fp, headers=None, cb=None, num_cb=10):
         """
@@ -348,15 +404,6 @@ class Key:
         fp = StringIO.StringIO()
         self.get_contents_to_file(fp, headers, cb, num_cb)
         return fp.getvalue()
-
-    # convenience methods for setting/getting ACL
-    def set_acl(self, acl_str):
-        if self.bucket != None:
-            self.bucket.set_acl(acl_str, self.name)
-
-    def get_acl(self):
-        if self.bucket != None:
-            return self.bucket.get_acl(self.name)
 
     def add_email_grant(self, permission, email_address):
         """
