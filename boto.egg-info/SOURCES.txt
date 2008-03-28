@@ -1,5 +1,6 @@
 README
 cq.py
+setup.cfg
 setup.py
 test.py
 boto/__init__.py

@@ -1,0 +1,24 @@
+python-boto (1.0a-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Eric Evans <eevans@debian.org>  Thu, 10 Jan 2008 12:57:42 -0600
+
+python-boto (0.9d-1) unstable; urgency=low
+
+  * New upstream release.
+
+ -- Eric Evans <eevans@debian.org>  Sat, 24 Nov 2007 17:12:40 -0600
+
+python-boto (0.9b-1) unstable; urgency=low
+
+  * New upstream release.
+  * Move tests to /usr/share/doc/python-boto/examples, (Closes: #433373).
+
+ -- Eric Evans <eevans@debian.org>  Mon, 16 Jul 2007 17:17:48 -0500
+
+python-boto (0.9a-1) unstable; urgency=low
+
+  * Initial release. (Closes: #431626)
+
+ -- Eric Evans <eevans@debian.org>  Wed, 04 Jul 2007 17:23:42 -0500
