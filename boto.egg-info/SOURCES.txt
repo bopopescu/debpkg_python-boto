@@ -1,6 +1,7 @@
 README
 cq.py
 s3put
+setup.cfg
 setup.py
 boto/__init__.py
 boto/connection.py
