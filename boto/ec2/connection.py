@@ -22,7 +22,7 @@
 import urllib
 import xml.sax
 import base64
-from boto import handler
+from boto import handler, config
 from boto.connection import AWSQueryConnection
 from boto.resultset import ResultSet
 from boto.ec2.image import Image, ImageAttribute
@@ -40,6 +40,8 @@ class EC2Connection(AWSQueryConnection):
                  is_secure=True, port=None, proxy=None, proxy_port=None,
                  host='ec2.amazonaws.com', debug=0,
                  https_connection_factory=None):
+        if config.has_option('Boto', 'ec2_host'):
+            host = config.get('Boto', 'ec2_host')
         AWSQueryConnection.__init__(self, aws_access_key_id,
                                     aws_secret_access_key,
                                     is_secure, port, proxy, proxy_port,
@@ -49,6 +51,9 @@ class EC2Connection(AWSQueryConnection):
         
     def get_all_images(self, image_ids=None, owners=None, executable_by=None):
         params = {}
+        # if user passed in a single image_id, turn it into a list
+        if isinstance(image_ids, str):
+            image_ids = [image_ids]
         if image_ids:
             self.build_list_params(params, image_ids, 'ImageId')
         if owners:
@@ -140,6 +145,9 @@ class EC2Connection(AWSQueryConnection):
         
     def get_all_instances(self, instance_ids=None):
         params = {}
+        # if user passed in a single instance_id, turn it into a list
+        if isinstance(instance_ids, str):
+            instance_ids = [instance_ids]
         if instance_ids:
             self.build_list_params(params, instance_ids, 'InstanceId')
         response = self.make_request('DescribeInstances', params)

@@ -34,6 +34,10 @@ class BotoClientError(Exception):
     def __str__(self):
         return 'S3Error: %s' % self.reason
 
+class SDBPersistanceError(Exception):
+
+    pass
+
 class S3PermissionsError(BotoClientError):
 
     pass
@@ -74,3 +78,5 @@ class AWSConnectionError(BotoClientError):
 class S3DataError(BotoClientError):
     pass
 
+class FPSResponseError(BotoServerError):
+    pass

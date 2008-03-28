@@ -21,12 +21,29 @@
 
 import urllib
 import xml.sax
+import threading
+import boto
 from boto import handler
 from boto.connection import AWSQueryConnection
 from boto.sdb.domain import Domain
 from boto.sdb.item import Item
 from boto.exception import SDBResponseError
 from boto.resultset import ResultSet
+
+class ItemThread(threading.Thread):
+    
+    def __init__(self, name, domain_name, item_names):
+        threading.Thread.__init__(self, name=name)
+        print 'starting %s with %d items' % (name, len(item_names))
+        self.domain_name = domain_name
+        self.conn = SDBConnection()
+        self.item_names = item_names
+        self.items = []
+        
+    def run(self):
+        for item_name in self.item_names:
+            item = self.conn.get_attributes(self.domain_name, item_name)
+            self.items.append(item)
 
 class SDBConnection(AWSQueryConnection):
 
@@ -41,6 +58,7 @@ class SDBConnection(AWSQueryConnection):
                                     aws_secret_access_key,
                                     is_secure, port, proxy, proxy_port,
                                     host, debug, https_connection_factory)
+        self.box_usage = 0.0
 
     def build_name_value_list(self, params, attributes, replace):
         keys = attributes.keys()
@@ -67,6 +85,14 @@ class SDBConnection(AWSQueryConnection):
             params['Attribute.%d.Name'%i] = name
             i += 1
 
+    def get_usage(self):
+        return self.box_usage
+
+    def print_usage(self):
+        print 'Total Usage: %f compute seconds' % self.box_usage
+        cost = self.box_usage * 0.14
+        print 'Approximate Cost: $%f' % cost
+
     def get_domain(self, domain_name, validate=True):
         """
         Returns a Domain object for a given domain_name.
@@ -76,6 +102,13 @@ class SDBConnection(AWSQueryConnection):
         domain = Domain(self, domain_name)
         if validate:
             self.query(domain, '', max_items=1)
+        return domain
+
+    def lookup(self, domain_name):
+        try:
+            domain = self.get_domain(domain_name)
+        except:
+            domain = None
         return domain
 
     def get_all_domains(self, max_domains=None, next_token=None):
@@ -155,12 +188,12 @@ class SDBConnection(AWSQueryConnection):
         else:
             raise SDBResponseError(response.status, response.reason, body)
 
-    def get_attributes(self, domain_or_name, item_name, attributes=None, item=None):
+    def get_attributes(self, domain_or_name, item_name, attribute_name=None, item=None):
         domain, domain_name = self.get_domain_and_name(domain_or_name)
         params = {'DomainName' : domain_name,
                   'ItemName' : item_name}
-        if attributes:
-            self.build_list_params(params, attributes, 'AttributeName')
+        if attribute_name:
+            params['AttributeName'] = attribute_name
         response = self.make_request('GetAttributes', params)
         body = response.read()
         if response.status == 200:
@@ -201,8 +234,7 @@ class SDBConnection(AWSQueryConnection):
             params['NextToken'] = next_token
         response = self.make_request('Query', params)
         body = response.read()
-        if self.debug > 1:
-            print body
+        boto.log.debug(body)
         if response.status == 200:
             rs = ResultSet()
             h = handler.XmlHandler(rs, self)
@@ -210,3 +242,33 @@ class SDBConnection(AWSQueryConnection):
             return rs
         else:
             raise SDBResponseError(response.status, response.reason, body)
+
+    def threaded_query(self, domain_or_name, query='', max_items=None, next_token=None, num_threads=6):
+        """
+        Returns a list of fully populated items that match the query provided.
+
+        The name/value pairs for all of the matching item names are retrieved in a number of separate
+        threads (specified by num_threads) to achieve maximum throughput.
+        The ResultSet that is returned has an attribute called next_token that can be used
+        to retrieve additional results for the same query.
+        """
+        domain, domain_name = self.get_domain_and_name(domain_or_name)
+        if max_items and num_threads > max_items:
+            num_threads = max_items
+        rs = self.query(domain_or_name, query, max_items, next_token)
+        threads = []
+        n = len(rs) / num_threads
+        for i in range(0, num_threads):
+            if i+1 == num_threads:
+                thread = ItemThread('Thread-%d' % i, domain_name, rs[n*i:])
+            else:
+                thread = ItemThread('Thread-%d' % i, domain_name, rs[n*i:n*(i+1)])
+            threads.append(thread)
+            thread.start()
+        del rs[0:]
+        for thread in threads:
+            thread.join()
+            for item in thread.items:
+                rs.append(item)
+        return rs
+

@@ -33,9 +33,9 @@ class Attributes(dict):
         pass
 
     def endElement(self, name, value, connection):
-        if name == 'AttributedValue':
+        if name == 'Attribute':
             self[self.current_key] = self.current_value
-        elif name == 'Attribute':
+        elif name == 'Name':
             self.current_key = value
         elif name == 'Value':
             self.current_value = value

@@ -19,49 +19,39 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 #
-import os, sys
+import os, sys, traceback, StringIO
 import boto
 from boto.utils import find_class
-from boto.pyami.config import Config
+from boto import config
+from boto.pyami.scriptbase import ScriptBase
+from boto.utils import find_class
 
-class Startup:
+class Startup(ScriptBase):
 
-    def get_script(self):
-        script_name = self.config.get_user('script_name')
-        if script_name:
-            c = boto.connect_s3(self.config.get_user('aws_access_key_id'),
-                                self.config.get_user('aws_secret_access_key'))
-            script_name = script_name + '.py'
-            script_bucket = self.config.get_user('script_bucket')
-            if not script_bucket:
-                script_bucket = self.config.get_user('bucket_name')
-            bucket = c.get_bucket(script_bucket)
-            script = bucket.get_key(script_name)
-            print 'Fetching %s.%s' % (bucket.name, script.name)
-            script_path = os.path.join(self.config.get_user('working_dir'),
-                                                          script_name)
-            script.get_contents_to_filename(script_path)
-            self.module_name = self.config.get_user('script_name')
-            sys.path.append(self.config.get_user('working_dir'))
-        else:
-            self.module_name = self.config.get_user('module_name')
-
-    def run_script(self):
-        debug = self.config.getint_user('debug')
-        # debug level greater than 1 means don't even startup the script
-        if debug > 1:
-            return
-        if self.module_name:
-            cls = find_class(self.module_name,
-                             self.config.get_user('class_name'))
-            s = cls(self.config)
-            s.run()
+    def run_scripts(self):
+        scripts = config.get('Pyami', 'scripts')
+        if scripts:
+            for script in scripts.split(','):
+                script = script.strip(" ")
+                try:
+                    pos = script.rfind('.')
+                    if pos > 0:
+                        mod_name = script[0:pos]
+                        cls_name = script[pos+1:]
+                        cls = find_class(mod_name, cls_name)
+                        boto.log.info('Running Script: %s' % script)
+                        s = cls()
+                        s.main()
+                    else:
+                        boto.log.warning('Trouble parsing script: %s' % script)
+                except Exception, e:
+                    boto.log.exception('Problem Running Script: %s' % script)
 
     def main(self):
-        self.config = Config()
-        self.get_script()
-        self.run_script()
+        self.run_scripts()
+        self.notify('Startup Completed for %s' % config.get('Instance', 'instance-id'))
 
 if __name__ == "__main__":
+    sys.path.append(config.get('Pyami', 'working_dir'))
     su = Startup()
     su.main()

@@ -19,77 +19,106 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 #
-import sys, os, pwd
+import os, pwd, logging
 import boto
 from boto.utils import get_instance_metadata, get_instance_userdata
-from boto.pyami.config import Config
+from boto.pyami.config import Config, BotoConfigPath
+from boto.pyami.scriptbase import ScriptBase
 
-class Bootstrap:
+class Bootstrap(ScriptBase):
     """
     The Bootstrap class is instantiated and run as part of the PyAMI
     instance initialization process.  The methods in this class will
     be run from the rc.local script of the instance and will be run
     as the root user.
+
+    The main purpose of this class is to make sure the boto distribution
+    on the instance is the one required.
     """
 
     def __init__(self):
-        self.config = None
         self.working_dir = '/mnt/pyami'
+        self.write_metadata()
+        ScriptBase.__init__(self)
 
     def write_metadata(self):
-        fp = open(os.path.expanduser('~pyami/metadata.ini'), 'w')
+        fp = open(os.path.expanduser(BotoConfigPath), 'w')
         fp.write('[Instance]\n')
         inst_data = get_instance_metadata()
         for key in inst_data:
-            fp.write('%s: %s\n' % (key, inst_data[key]))
-        fp.write('[User]\n')
-        user_data = get_instance_userdata(sep='|')
-        for key in user_data:
-            fp.write('%s: %s\n' % (key, user_data[key]))
-        fp.write('working_dir: %s\n' % self.working_dir)
+            fp.write('%s = %s\n' % (key, inst_data[key]))
+        user_data = get_instance_userdata()
+        fp.write('\n%s\n' % user_data)
+        fp.write('[Pyami]\n')
+        fp.write('working_dir = %s\n' % self.working_dir)
         fp.close()
-        # chown to pyami user
-        t = pwd.getpwnam('pyami')
-        os.chown(os.path.expanduser('~pyami/metadata.ini'), t[2], t[3])
+        # This file has the AWS credentials, should we lock it down?
+        # os.chmod(BotoConfigPath, stat.S_IREAD | stat.S_IWRITE)
         # now that we have written the file, read it into a pyami Config object
-        self.config = Config()
-
-    def write_env_setup(self):
-        fp = open('/etc/profile.d/aws.sh', 'w')
-        fp.write('# AWS Environment Setup Script\n')
-        access_key = self.config.get_user('aws_access_key_id', None)
-        if access_key:
-            fp.write('export AWS_ACCESS_KEY_ID=%s\n' % access_key)
-        secret_key = self.config.get_user('aws_secret_access_key', None)
-        if secret_key:
-            fp.write('export AWS_SECRET_ACCESS_KEY=%s\n' % secret_key)
-        fp.close()
+        boto.config = Config()
+        boto.init_logging()
 
     def create_working_dir(self):
-        print 'Working directory: %s' % self.working_dir
+        boto.log.info('Working directory: %s' % self.working_dir)
         if not os.path.exists(self.working_dir):
             os.mkdir(self.working_dir)
-        os.chmod(self.working_dir, 0777)
 
-    def get_eggs(self):
-        egg_bucket = self.config.get_user('egg_bucket', None)
-        if egg_bucket:
-            s3 = boto.connect_s3(self.config.get_user('aws_access_key_id'),
-                                 self.config.get_user('aws_secret_access_key'))
-            bucket = s3.get_bucket(egg_bucket)
-            eggs = self.config.get_user('eggs', '')
-            for egg in eggs.split(','):
-                if egg:
-                    egg_key = bucket.get_key(egg.strip())
-                    print 'Fetching %s.%s' % (bucket.name, egg_key.name)
-                    egg_path = os.path.join(self.config.get_user('working_dir'), egg_key.name)
-                    egg_key.get_contents_to_filename(egg_path)
-            
+    def load_boto(self):
+        update = boto.config.get('Boto', 'boto_update', 'svn:HEAD')
+        if update.startswith('svn'):
+            if update.find(':') >= 0:
+                method, version = update.split(':')
+                version = '-r%s' % version
+            else:
+                version = '-rHEAD'
+            location = boto.config.get('Boto', 'boto_location', '/usr/local/boto')
+            self.run('svn update %s %s' % (version, location))
+        else:
+            # first remove the symlink needed when running from subversion
+            self.run('rm /usr/local/lib/python2.5/site-packages/boto')
+            self.run('easy_install %s' % update)
+
+    def fetch_s3_file(self, s3_file):
+        try:
+            if s3_file.startswith('s3:'):
+                bucket_name, key_name = s3_file[len('s3:'):].split('/')
+                c = boto.connect_s3()
+                bucket = c.get_bucket(bucket_name)
+                key = bucket.get_key(key_name)
+                boto.log.info('Fetching %s/%s' % (bucket.name, key.name))
+                path = os.path.join(self.working_dir, key.name)
+                key.get_contents_to_filename(path)
+        except:
+            boto.log.exception('Problem Retrieving file: %s' % s3_file)
+            path = None
+        return path
+
+    def load_packages(self):
+        package_str = boto.config.get('Pyami', 'packages')
+        if package_str:
+            packages = package_str.split(',')
+            for package in packages:
+                package = package.strip()
+                if package.startswith('s3:'):
+                    package = self.fetch_s3_file(package)
+                if package:
+                    # if the "package" is really a .py file, it doesn't have to
+                    # be installed, just being in the working dir is enough
+                    if not package.endswith('.py'):
+                        self.run('easy_install -Z %s' % package, exit_on_error=False)
+
     def main(self):
-        self.write_metadata()
-        self.write_env_setup()
         self.create_working_dir()
+        self.load_boto()
+        self.load_packages()
+        self.notify('Bootstrap Completed for %s' % boto.config.get_instance('instance-id'))
 
 if __name__ == "__main__":
+    # because bootstrap starts before any logging configuration can be loaded from
+    # the boto config files, we will manually enable logging to /var/log/boto.log
+    logging.basicConfig(level=logging.NOTSET,
+                        format='%(asctime)s %(levelname)s %(message)s',
+                        filename='/var/log/boto.log',
+                        filemode='w')
     bs = Bootstrap()
     bs.main()
