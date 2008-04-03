@@ -1,8 +1,10 @@
 python-boto (1.1c-1) unstable; urgency=low
 
-  * New upstream release.
+  * New upstream release (Closes: #461148).
+  * Patched boto/s3/connection.py to provide a means of restoring
+    the older calling convention for buckets.
 
- -- Eric Evans <eevans@debian.org>  Fri, 28 Mar 2008 10:24:12 -0500
+ -- Eric Evans <eevans@debian.org>  Thu, 03 Apr 2008 16:14:29 -0500
 
 python-boto (1.0a-1) unstable; urgency=low
 
