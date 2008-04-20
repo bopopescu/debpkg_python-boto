@@ -1,4 +1,4 @@
-# Copyright (c) 2006,2007 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2008 Chris Moyer http://coredumped.org
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -18,20 +18,18 @@
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
+#
+from boto.pyami.installers.ubuntu.installer import Installer
 
-from boto.services.commandlineservice import CommandLineService
-import os
+class Apache(Installer):
+    """
+    Install apache2, mod_python, and libapache2-svn
+    """
 
-class ConvertVideo(CommandLineService):
+    def install(self):
+        self.run('apt-get -y install apache2', notify=True, exit_on_error=True)
+        self.run('apt-get -y install mod_python', notify=True, exit_on_error=True)
+        self.run('apt-get -y install libapache2-mod-python', notify=True, exit_on_error=True)
 
-    ProcessingTime = 120
-
-    Command = """ffmpeg -y -i %s -f mov -r 29.97 -b 1200kb -mbd 2 -flags +4mv+trell -aic 2 -cmp 2 -subcmp 2 -ar 48000 -ab 192 -s 320x240 -vcodec mpeg4 -acodec aac %s"""
-
-    def process_file(self, in_file_name, msg):
-        out_file_name = os.path.join(self.working_dir, 'out.mov')
-        command = self.Command % (in_file_name, out_file_name)
-        print 'running:\n%s' % command
-        self.run_command(command, msg)
-        return [(out_file_name, 'video/quicktime')]
-        
+    def main(self):
+        self.install()

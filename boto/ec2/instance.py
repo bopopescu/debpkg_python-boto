@@ -24,6 +24,7 @@ Represents an EC2 Instance
 """
 
 from boto.resultset import ResultSet
+from boto.ec2.address import Address
 import base64
 
 class Reservation:
@@ -76,6 +77,9 @@ class Instance:
         self.instance_type = None
         self.launch_time = None
         self.image_id = None
+        self.placement = None
+        self.kernel = None
+        self.ramdisk = None
 
     def __repr__(self):
         return 'Instance:%s' % self.id
@@ -109,6 +113,12 @@ class Instance:
             self.instance_type = value
         elif name == 'launchTime':
             self.launch_time = value
+        elif name == 'availabilityZone':
+            self.placement = value
+        elif name == 'kernelId':
+            self.kernel = value
+        elif name == 'ramdiskId':
+            self.ramdisk = value
         else:
             setattr(self, name, value)
 
@@ -150,6 +160,11 @@ class Instance:
 
     def confirm_product(self, product_code):
         return self.connection.confirm_product_instance(self.id, product_code)
+
+    def use_ip(self, ip_address):
+        if isinstance(ip_address, Address):
+            ip_address = ip_address.public_ip
+        return self.connection.associate_address(self.id, ip_address)
 
 class Group:
 

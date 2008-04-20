@@ -38,6 +38,7 @@ class Item(IObject):
         self.name = None
         self.instance_type = None
         self.quantity = 0
+        self.zone = None
         self.ami = None
         self.groups = []
         self.key = None
@@ -67,6 +68,13 @@ class Item(IObject):
             self.quantity = n
         else:
             self.quantity = self.get_int('Quantity')
+
+    def set_zone(self, zone=None):
+        if zone:
+            self.zone = zone
+        else:
+            l = [(z, z.name, z.state) for z in self.ec2.get_all_zones()]
+            self.zone = self.choose_from_list(l, prompt='Choose Availability Zone')
             
     def set_ami(self, ami=None):
         if ami:
@@ -89,10 +97,7 @@ class Item(IObject):
             l = [(k, k.name, '') for k in self.ec2.get_all_key_pairs()]
             self.key = self.choose_from_list(l, prompt='Choose Keypair')
 
-    def set_config(self, config_path=None):
-        if not config_path:
-            config_path = self.get_filename('Specify Config file')
-        self.config = Config(path=config_path)
+    def update_config(self):
         if not self.config.has_section('Credentials'):
             self.config.add_section('Credentials')
             self.config.set('Credentials', 'aws_access_key_id', self.ec2.aws_access_key_id)
@@ -103,6 +108,11 @@ class Item(IObject):
         if sdb_domain:
             self.config.set('Pyami', 'server_sdb_domain', sdb_domain.name)
             self.config.set('Pyami', 'server_sdb_name', self.name)
+
+    def set_config(self, config_path=None):
+        if not config_path:
+            config_path = self.get_filename('Specify Config file')
+        self.config = Config(path=config_path)
 
     def get_userdata_string(self):
         s = StringIO.StringIO()
@@ -116,6 +126,9 @@ class Item(IObject):
         self.instance_type = params.get('instance_type', self.instance_type)
         if not self.instance_type:
             self.set_instance_type()
+        self.zone = params.get('zone', self.zone)
+        if not self.zone:
+            self.set_zone()
         self.quantity = params.get('quantity', self.quantity)
         if not self.quantity:
             self.set_quantity()
@@ -131,6 +144,7 @@ class Item(IObject):
         self.config = params.get('config', self.config)
         if not self.config:
             self.set_config()
+        self.update_config()
 
 class Order(IObject):
 
@@ -161,7 +175,8 @@ class Order(IObject):
         for item in self.items:
             r = item.ami.run(min_count=1, max_count=item.quantity,
                              key_name=item.key.name, user_data=item.get_userdata_string(),
-                             security_groups=item.groups, instance_type=item.instance_type)
+                             security_groups=item.groups, instance_type=item.instance_type,
+                             placement=item.zone.name)
             if block:
                 states = [i.state for i in r.instances]
                 if states.count('running') != len(states):

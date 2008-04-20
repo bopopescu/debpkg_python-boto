@@ -1,4 +1,4 @@
-# Copyright (c) 2006,2007 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006-2008 Mitch Garnaat http://garnaat.org/
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -20,27 +20,30 @@
 # IN THE SOFTWARE.
 
 """
-Represents an SQS Attribute Name/Value set
+Represents an EC2 Availability Zone
 """
 
-class Attributes(dict):
+class Zone:
     
-    def __init__(self, parent):
-        self.parent = parent
-        self.current_key = None
-        self.current_value = None
+    def __init__(self, connection=None):
+        self.connection = connection
+        self.name = None
+        self.state = None
+
+    def __repr__(self):
+        return 'Zone:%s' % self.name
 
     def startElement(self, name, attrs, connection):
-        pass
+        return None
 
     def endElement(self, name, value, connection):
-        if name == 'Attribute':
-            self[self.current_key] = self.current_value
-        elif name == 'Name':
-            self.current_key = value
-        elif name == 'Value':
-            self.current_value = value
+        if name == 'zoneName':
+            self.name = value
+        elif name == 'zoneState':
+            self.state = value
         else:
             setattr(self, name, value)
 
-        
+
+
+

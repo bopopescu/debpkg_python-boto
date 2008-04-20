@@ -43,10 +43,16 @@ import sha
 import urllib, urllib2
 import imp
 import popen2, os, StringIO
-import time
+import time, datetime
 import logging.handlers
 import boto
 import tempfile
+try:
+    import hashlib
+    _hashfn = hashlib.sha512
+except ImportError:
+    import md5
+    _hashfn = md5.md5
 
 METADATA_PREFIX = 'x-amz-meta-'
 AMAZON_HEADER_PREFIX = 'x-amz-'
@@ -99,15 +105,6 @@ def canonical_string(method, path, headers, expires=None):
 
     return buf
 
-# computes the base64'ed hmac-sha hash of the canonical string and the secret
-# access key, optionally urlencoding the result
-def encode(aws_secret_access_key, str, urlencode=False):
-    b64_hmac = base64.encodestring(hmac.new(aws_secret_access_key, str, sha).digest()).strip()
-    if urlencode:
-        return urllib.quote_plus(b64_hmac)
-    else:
-        return b64_hmac
-
 def merge_meta(headers, metadata):
     final_headers = headers.copy()
     for k in metadata.keys():
@@ -159,11 +156,16 @@ def get_instance_userdata(version='latest', sep=None):
                 t = nvpair.split('=')
                 user_data[t[0].strip()] = t[1].strip()
     return user_data
+
+ISO8601 = '%Y-%m-%dT%H:%M:%SZ'
     
 def get_ts(ts=None):
     if not ts:
         ts = time.gmtime()
-    return time.strftime('%Y-%m-%dT%H:%M:%SZ', ts)
+    return time.strftime(ISO8601, ts)
+
+def parse_ts(ts):
+    return datetime.datetime.strptime(ts, ISO8601)
 
 def find_class(module_name, class_name):
     modules = module_name.split('.')
@@ -420,3 +422,25 @@ class LRUCache(dict):
         item.previous = None
         item.next = self.head
         self.head.previous = self.head = item
+
+class Password:
+    """
+    Password object that stores itself as SHA512 hashed.
+    """
+    def __init__(self, str=None):
+        """
+        Load the string from an initial value, this should be the raw SHA512 hashed password
+        """
+        self.str = str
+
+    def set(self, value):
+        self.str = _hashfn(value).hexdigest()
+   
+    def __str__(self):
+        return str(self.str)
+   
+    def __eq__(self, other):
+        return str(_hashfn(value).hexdigest()) == str(self.str)
+
+    def __len__(self):
+        return len(self.str)

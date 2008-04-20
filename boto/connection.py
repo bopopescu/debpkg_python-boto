@@ -47,9 +47,11 @@ import time
 import urllib, urlparse
 import os
 import xml.sax
-from boto.exception import AWSConnectionError
+import boto
+from boto.exception import AWSConnectionError, BotoClientError, BotoServerError
+from boto.resultset import ResultSet
 import boto.utils
-from boto import config, UserAgent
+from boto import config, UserAgent, handler
 
 PORTS_BY_SECURITY = { True: 443, False: 80 }
 
@@ -95,6 +97,9 @@ class AWSAuthConnection:
             self.aws_secret_access_key = os.environ['AWS_SECRET_ACCESS_KEY']
         elif config.has_option('Credentials', 'aws_secret_access_key'):
             self.aws_secret_access_key = config.get('Credentials', 'aws_secret_access_key')
+
+        # initialize an HMAC for signatures, make copies with each request
+        self.hmac = hmac.new(key=self.aws_secret_access_key, digestmod=sha)
 
         # cache up to 20 connections
         self._cache = boto.utils.LRUCache(20)
@@ -151,7 +156,7 @@ class AWSAuthConnection:
             host = '%s:%d' % (self.proxy, int(self.proxy_port))
         if host is None:
             host = '%s:%d' % (self.server, self.port)
-        boto.log.info('establishing HTTP connection')
+        boto.log.debug('establishing HTTP connection')
         if is_secure:
             if self.https_connection_factory:
                 connection = self.https_connection_factory(host)
@@ -164,7 +169,7 @@ class AWSAuthConnection:
         cached_name = is_secure and 'https://' or 'http://'
         cached_name += host
         if cached_name in self._cache:
-            boto.log.info('closing old HTTP connection')
+            boto.log.debug('closing old HTTP connection')
             self._cache[cached_name].close()
         self._cache[cached_name] = connection
         # update self.connection for backwards-compatibility
@@ -189,12 +194,13 @@ class AWSAuthConnection:
         This code was inspired by the S3Utils classes posted to the boto-users
         Google group by Larry Bates.  Thanks!
         """
-        boto.log.info('Method: %s' % method)
-        boto.log.info('Path: %s' % path)
-        boto.log.info('Data: %s' % data)
-        boto.log.info('Headers: %s' % headers)
-        boto.log.info('Host: %s' % host)
+        boto.log.debug('Method: %s' % method)
+        boto.log.debug('Path: %s' % path)
+        boto.log.debug('Data: %s' % data)
+        boto.log.debug('Headers: %s' % headers)
+        boto.log.debug('Host: %s' % host)
         response = None
+        body = None
         e = None
         num_retries = config.getint('Boto', 'num_retries', self.num_retries)
         i = 0
@@ -208,7 +214,7 @@ class AWSAuthConnection:
                     response = connection.getresponse()
                 location = response.getheader('location')
                 if response.status == 500 or response.status == 503:
-                    boto.log.info('received %d response, retrying in %d seconds' % (response.status, 2**i))
+                    boto.log.debug('received %d response, retrying in %d seconds' % (response.status, 2**i))
                     body = response.read()
                 elif response.status < 300 or response.status >= 400 or \
                         not location:
@@ -218,14 +224,14 @@ class AWSAuthConnection:
                             urlparse.urlparse(location)
                     if query:
                         path += '?' + query
-                    boto.log.info('Redirecting: %s' % scheme + '://' + host + path)
+                    boto.log.debug('Redirecting: %s' % scheme + '://' + host + path)
                     connection = self.get_http_connection(host,
                             scheme == 'https')
                     continue
             except KeyboardInterrupt:
                 sys.exit('Keyboard Interrupt')
             except self.http_exceptions, e:
-                boto.log.info('encountered %s exception, reconnecting' % \
+                boto.log.debug('encountered %s exception, reconnecting' % \
                                   e.__class__.__name__)
                 connection = self.refresh_http_connection(host, self.is_secure)
             time.sleep(2**i)
@@ -234,7 +240,7 @@ class AWSAuthConnection:
         # succeeded.  So, if we have a response object, use it to raise an exception.
         # Otherwise, raise the exception that must have already happened.
         if response:
-            raise S3ResponseError(response.status, response.reason)
+            raise BotoServerError(response.status, response.reason, body)
         elif e:
             raise e
         else:
@@ -261,24 +267,61 @@ class AWSAuthConnection:
                                             time.gmtime())
 
         c_string = boto.utils.canonical_string(method, path, headers)
-        boto.log.info('Canonical: %s' % c_string)
-        headers['Authorization'] = \
-            "AWS %s:%s" % (self.aws_access_key_id,
-                           boto.utils.encode(self.aws_secret_access_key,
-                                             c_string))
+        boto.log.debug('Canonical: %s' % c_string)
+        hmac = self.hmac.copy()
+        hmac.update(c_string)
+        b64_hmac = base64.encodestring(hmac.digest()).strip()
+        headers['Authorization'] = "AWS %s:%s" % (self.aws_access_key_id, b64_hmac)
 
 class AWSQueryConnection(AWSAuthConnection):
 
     APIVersion = ''
     SignatureVersion = '1'
+    ResponseError = BotoServerError
 
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
                  is_secure=True, port=None, proxy=None, proxy_port=None,
-                 host=None, debug=0, https_connection_factory=None):
-        AWSAuthConnection.__init__(self, host,
-                                   aws_access_key_id, aws_secret_access_key,
-                                   is_secure, port, proxy, proxy_port, debug,
-                                   https_connection_factory)
+                 proxy_user=None, proxy_pass=None, host=None, debug=0,
+                 https_connection_factory=None):
+        AWSAuthConnection.__init__(self, host, aws_access_key_id, aws_secret_access_key,
+                                   is_secure, port, proxy, proxy_port, proxy_user, proxy_pass,
+                                   debug,  https_connection_factory)
+
+    def calc_signature_0(self, params):
+        boto.log.debug('using calc_signature_0')
+        hmac = self.hmac.copy()
+        s = params['Action'] + params['Timestamp']
+        hmac.update(s)
+        keys = params.keys()
+        keys.sort(cmp = lambda x, y: cmp(x.lower(), y.lower()))
+        qs = ''
+        for key in keys:
+            qs += key + '=' + urllib.quote(unicode(params[key]).encode('utf-8')) + '&'
+        return (qs, base64.b64encode(hmac.digest()))
+
+    def calc_signature_1(self, params):
+        boto.log.debug('using calc_signature_1')
+        hmac = self.hmac.copy()
+        keys = params.keys()
+        keys.sort(cmp = lambda x, y: cmp(x.lower(), y.lower()))
+        qs = ''
+        for key in keys:
+            hmac.update(key)
+            val = params[key]
+            if not isinstance(val, str) and not isinstance(val, unicode):
+                val = str(val)
+            hmac.update(val)
+            qs += key + '=' + urllib.quote(unicode(params[key]).encode('utf-8')) + '&'
+        return (qs, base64.b64encode(hmac.digest()))
+
+    def get_signature(self, params):
+        if self.SignatureVersion == '1':
+            t = self.calc_signature_1(params)
+        elif self.SignatureVersion == '0':
+            t = self.calc_signature_0(params)
+        else:
+            raise BotoClientError('Unknown Signature Version: %s' % self.SignatureVersion)
+        return t
 
     def make_request(self, action, params=None, path=None, verb='GET'):
         headers = {'User-Agent' : UserAgent}
@@ -286,27 +329,61 @@ class AWSQueryConnection(AWSAuthConnection):
             path = '/'
         if params == None:
             params = {}
-        h = hmac.new(key=self.aws_secret_access_key, digestmod=sha)
         params['Action'] = action
         params['Version'] = self.APIVersion
         params['AWSAccessKeyId'] = self.aws_access_key_id
         params['SignatureVersion'] = self.SignatureVersion
         params['Timestamp'] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-        keys = params.keys()
-        keys.sort(cmp = lambda x, y: cmp(x.lower(), y.lower()))
-        qs = ''
-        for key in keys:
-            h.update(key)
-            h.update(str(params[key]))
-            qs += key + '=' + urllib.quote(unicode(params[key]).encode('utf-8')) + '&'
-        signature = base64.b64encode(h.digest())
+        qs, signature = self.get_signature(params)
         qs = path + '?' + qs + 'Signature=' + urllib.quote(signature)
-        
         if self.use_proxy:
             qs = self.prefix_proxy_to_path(qs)
-
         return self._mexe(verb, qs, None, headers)
 
     def build_list_params(self, params, items, label):
+        if isinstance(items, str):
+            items = [items]
         for i in range(1, len(items)+1):
             params['%s.%d' % (label, i)] = items[i-1]
+            
+    # generics
+
+    def get_list(self, action, params, markers, path='/'):
+        response = self.make_request(action, params, path)
+        body = response.read()
+        if response.status == 200:
+            rs = ResultSet(markers)
+            h = handler.XmlHandler(rs, self)
+            xml.sax.parseString(body, h)
+            return rs
+        else:
+            boto.log.error('%s %s' % (response.status, response.reason))
+            boto.log.error('%s' % body)
+            raise self.ResponseError(response.status, response.reason, body)
+        
+    def get_object(self, action, params, cls, path='/'):
+        response = self.make_request(action, params, path)
+        body = response.read()
+        if response.status == 200:
+            obj = cls(self)
+            h = handler.XmlHandler(obj, self)
+            xml.sax.parseString(body, h)
+            return obj
+        else:
+            boto.log.error('%s %s' % (response.status, response.reason))
+            boto.log.error('%s' % body)
+            raise self.ResponseError(response.status, response.reason, body)
+        
+    def get_status(self, action, params, path='/'):
+        response = self.make_request(action, params, path)
+        body = response.read()
+        if response.status == 200:
+            rs = ResultSet()
+            h = handler.XmlHandler(rs, self)
+            xml.sax.parseString(body, h)
+            return rs.status
+        else:
+            boto.log.error('%s %s' % (response.status, response.reason))
+            boto.log.error('%s' % body)
+            raise self.ResponseError(response.status, response.reason, body)
+

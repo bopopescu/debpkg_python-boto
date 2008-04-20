@@ -88,7 +88,7 @@ class RawMessage:
 
     def endElement(self, name, value, connection):
         if name == 'Body':
-            self._body = self.decode(value)
+            self.set_body(self.decode(value))
         elif name == 'MessageId':
             self.id = value
         elif name == 'ReceiptHandle':
@@ -119,18 +119,8 @@ class RawMessage:
         just calls get_body().  You probably shouldn't need to call this
         method in the normal course of events.
         """
-        return self.encode(self._body)
+        return self.encode(self.get_body())
     
-    def change_visibility(self, vtimeout):
-        """
-        Convenience function to allow you to directly change the
-        invisibility timeout for an individual message that has been
-        read from an SQS queue.  This won't affect the default visibility
-        timeout of the queue.
-        """
-        return self.queue.connection.change_message_visibility(self.queue.id,
-                                                               self.id,
-                                                               vtimeout)
 class Message(RawMessage):
     """
     The default Message class used for SQS queues.  This class automatically

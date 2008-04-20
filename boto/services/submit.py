@@ -20,36 +20,43 @@
 # IN THE SOFTWARE.
 
 import boto
-from boto.services.message import ServiceMessage
 import time, os
 
 class Submitter:
 
-    def __init__(self, bucket_name, queue_name, message_cls=ServiceMessage):
-        self.s3 = boto.connect_s3()
-        self.sqs = boto.connect_sqs()
-        self.bucket = self.s3.get_bucket(bucket_name)
-        self.queue = self.sqs.get_queue(queue_name)
-        self.queue.set_message_class(message_cls)
+    def __init__(self, sd):
+        self.sd = sd
+        self.input_bucket = self.sd.get_obj('input_bucket')
+        self.output_bucket = self.sd.get_obj('output_bucket')
+        self.output_domain = self.sd.get_obj('output_domain')
+        self.queue = self.sd.get_obj('input_queue')
 
-    def submit_file(self, path, metadata=None, cb=None, num_cb=0):
+    def get_key_name(self, fullpath, prefix):
+        key_name = fullpath[len(prefix):]
+        l = key_name.split(os.sep)
+        return '/'.join(l)
+
+    def write_message(self, key, metadata):
+        if self.queue:
+            m = self.queue.new_message()
+            m.for_key(key, metadata)
+            if self.output_bucket:
+                m['OutputBucket'] = self.output_bucket.name
+            self.queue.write(m)
+
+    def submit_file(self, path, metadata=None, cb=None, num_cb=0, prefix='/'):
         if not metadata:
             metadata = {}
-        names = boto.config.get('Service', 'filenames', 'preserve')
-        if names == 'preserve':
-            key_name = os.path.split(path)[1]
-        elif names == 'preserve_full':
-            key_name = path
-        else:
-            key_name = None
-        k = self.bucket.new_key(key_name)
+        key_name = self.get_key_name(path, prefix)
+        k = self.input_bucket.new_key(key_name)
         k.update_metadata(metadata)
         k.set_contents_from_filename(path, replace=False, cb=cb, num_cb=num_cb)
-        m = ServiceMessage()
-        m.for_key(k, metadata)
-        self.queue.write(m)
+        self.write_message(k, metadata)
 
-    def submit_path(self, path, tags=None, ignore_dirs=[], cb=None, num_cb=0, status=False):
+    def submit_path(self, path, tags=None, ignore_dirs=None, cb=None, num_cb=0, status=False, prefix='/'):
+        path = os.path.expanduser(path)
+        path = os.path.expandvars(path)
+        path = os.path.abspath(path)
         total = 0
         metadata = {}
         if tags:
@@ -58,20 +65,23 @@ class Submitter:
         for t in time.gmtime():
             l.append(str(t))
         metadata['Batch'] = '_'.join(l)
+        if self.output_domain:
+            self.output_domain.put_attributes(metadata['Batch'], {'type' : 'Batch'})
         if os.path.isdir(path):
             for root, dirs, files in os.walk(path):
-                for ignore in ignore_dirs:
-                    if ignore in dirs:
-                        dirs.remove(ignore)
+                if ignore_dirs:
+                    for ignore in ignore_dirs:
+                        if ignore in dirs:
+                            dirs.remove(ignore)
                 for file in files:
                     fullpath = os.path.join(root, file)
                     if status:
                         print 'Submitting %s' % fullpath
-                    self.submit_file(fullpath, metadata, cb, num_cb)
+                    self.submit_file(fullpath, metadata, cb, num_cb, prefix)
                     total += 1
         elif os.path.isfile(path):
             self.submit_file(path, metadata, cb, num_cb)
             total += 1
         else:
             print 'problem with %s' % path
-        return total
+        return (metadata['Batch'], total)
