@@ -20,7 +20,7 @@
 # IN THE SOFTWARE.
 
 import xml.sax
-import urllib
+import urllib, base64
 import time
 import boto.utils
 from boto.connection import AWSAuthConnection
@@ -28,8 +28,16 @@ from boto import handler
 from boto.s3.bucket import Bucket
 from boto.s3.key import Key
 from boto.resultset import ResultSet
-from boto.exception import S3ResponseError, S3CreateError
+from boto.exception import S3ResponseError, S3CreateError, BotoClientError
 
+def assert_case_insensitive(f):
+    def wrapper(*args, **kwargs):
+        if len(args) == 3 and not args[2].islower():
+            raise BotoClientError("Bucket names cannot contain upper-case " \
+	        "characters when using either the sub-domain or virtual " \
+		"hosting calling format.")
+        return f(*args, **kwargs)
+    return wrapper
 
 class _CallingFormat:
     def build_url_base(self, protocol, server, bucket, key=''):
@@ -54,12 +62,24 @@ class _CallingFormat:
         return '/%s' % urllib.quote_plus(key)
 
 class SubdomainCallingFormat(_CallingFormat):
+    @assert_case_insensitive
     def get_bucket_server(self, server, bucket):
         return '%s.%s' % (bucket, server)
 
 class VHostCallingFormat(_CallingFormat):
+    @assert_case_insensitive
     def get_bucket_server(self, server, bucket):
         return bucket
+
+class OrdinaryCallingFormat(_CallingFormat):
+    def get_bucket_server(self, server, bucket):
+        return server
+
+    def build_path_base(self, bucket, key=''):
+        path_base = '/'
+        if bucket:
+            path_base += "%s/" % bucket
+        return path_base + urllib.quote_plus(key)
 
 class Location:
     DEFAULT = ''
@@ -91,8 +111,10 @@ class S3Connection(AWSAuthConnection):
         auth_path = self.calling_format.build_auth_path(bucket, key)
         canonical_str = boto.utils.canonical_string(method, auth_path,
                                                     headers, expires)
-        encoded_canonical = boto.utils.encode(self.aws_secret_access_key,
-                                              canonical_str, True)
+        hmac_copy = self.hmac.copy()
+        hmac_copy.update(canonical_str)
+        b64_hmac = base64.encodestring(hmac_copy.digest()).strip()
+        encoded_canonical = urllib.quote_plus(b64_hmac)
         path = self.calling_format.build_path_base(bucket, key)
         if query_auth:
             query_part = '?' + self.QueryString % (encoded_canonical, expires,

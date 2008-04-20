@@ -22,11 +22,15 @@
 from boto.pyami.installers.ubuntu.installer import Installer
 import os
 import boto
+from ConfigParser import SafeConfigParser
+import subprocess
+import time
 
 class MySQL(Installer):
 
     def install(self):
-        self.run('apt-get -y install mysql-server', notify=False, exit_on_error=False)
+        self.run('apt-get update')
+        self.run('apt-get -y install mysql-server', notify=True, exit_on_error=True)
 
     def set_root_password(self, password=None):
         if not password:
@@ -35,9 +39,12 @@ class MySQL(Installer):
             self.run('mysqladmin -u root password %s' % password)
 
     def change_data_dir(self):
+        fresh_install = False;
+        time.sleep(2) #trying to stop mysql immediately after installing it fails
         self.stop('mysql')
         if not os.path.exists('/mnt/mysql'):
             self.run('mkdir /mnt/mysql')
+            fresh_install = True;
         self.run('chown -R mysql:mysql /mnt/mysql')
         fp = open('/etc/mysql/conf.d/use_mnt.cnf', 'w')
         fp.write('# created by pyami\n')
@@ -46,9 +53,21 @@ class MySQL(Installer):
         fp.write('datadir = /mnt/mysql\n')
         fp.write('log_bin = /mnt/mysql/mysql-bin.log\n')
         fp.close()
-        self.run('cp -pr /var/lib/mysql/* /mnt/mysql/')
-        self.run('cp -pr /var/log/mysql/* /mnt/mysql/')
-        self.start('mysql')
+        if fresh_install:
+            self.run('cp -pr /var/lib/mysql/* /mnt/mysql/')
+            self.run('cp -pr /var/log/mysql/* /mnt/mysql/')
+            self.start('mysql')
+        else:
+            #get the password ubuntu expects to use:
+            config_parser = SafeConfigParser()
+            config_parser.read('/etc/mysql/debian.cnf')
+            password = config_parser.get('client', 'password')
+            # start the mysql deamon, then mysql with the required grant statement piped into it:
+            self.start('mysql')
+            time.sleep(1) #time for mysql to start
+            grant_command = "echo \"GRANT ALL PRIVILEGES ON *.* TO 'debian-sys-maint'@'localhost' IDENTIFIED BY '%s' WITH GRANT OPTION;\" | mysql" % password
+            self.run(grant_command)
+            # leave mysqld running
 
     def main(self):
         self.install()

@@ -19,26 +19,33 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-from boto.services.service import Service
-from boto.utils import ShellCommand
-import StringIO
+"""
+Represents an EC2 Elastic IP Address
+"""
 
-class CommandLineService(Service):
+class Address:
+    
+    def __init__(self, connection=None):
+        self.connection = connection
+        self.public_ip = None
+        self.instance_id = None
 
-    def log_data(self, data):
-        out_file_name = self.__class__.__name__ + '.log'
-        out_file_name = os.path.join(self.working_dir, out_file_name)
-        out_fp = open(out_file_name, 'a')
-        out_fp.write(data)
-        out_fp.close()
-        
-    def run_command(self, command, msg, debug=0):
-        log_fp = StringIO.StringIO()
-        log_fp.write(msg.get_body())
-        log_fp.write('\n')
-        c = ShellCommand(command, log_fp)
-        # only log unsuccessful commands unless debug flag is set
-        if c.status != 0 or debug > 0:
-            self.log_data(c.output)
-        return c.status
-        
+    def __repr__(self):
+        return 'Address:%s' % self.public_ip
+
+    def startElement(self, name, attrs, connection):
+        return None
+
+    def endElement(self, name, value, connection):
+        if name == 'publicIp':
+            self.public_ip = value
+        elif name == 'instanceId':
+            self.instance_id = value
+        else:
+            setattr(self, name, value)
+
+    def delete(self):
+        return self.connection.delete_address(self.public_ip)
+
+
+
