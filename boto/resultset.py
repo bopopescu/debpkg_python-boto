@@ -43,21 +43,10 @@ class ResultSet(list):
             self.markers = marker_elem
         else:
             self.markers = []
-        self.index = 0
         self.marker = None
         self.is_truncated = False
         self.next_token = None
         self.status = True
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        if self.index == len(self):
-            self.index = 0
-            raise StopIteration
-        self.index += 1
-        return self[self.index-1]
 
     def startElement(self, name, attrs, connection):
         for t in self.markers:
@@ -93,6 +82,8 @@ class ResultSet(list):
                 connection.box_usage += float(value)
             except:
                 pass
+        elif name == 'IsValid':
+            self.status = self.to_boolean(value, 'True')
         else:
             setattr(self, name, value)
         

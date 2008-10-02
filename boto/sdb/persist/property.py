@@ -19,8 +19,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-from boto.exception import SDBPersistanceError
-from boto.sdb.persist import get_domain
+from boto.exception import SDBPersistenceError
 from boto.sdb.persist.checker import *
 from boto.utils import Password
 
@@ -38,18 +37,18 @@ class Property(object):
 class ScalarProperty(Property):
 
     def save(self, obj):
-        domain = get_domain()
+        domain = obj._manager.domain
         domain.put_attributes(obj.id, {self.name : self.to_string(obj)}, replace=True)
 
     def to_string(self, obj):
         return self.checker.to_string(getattr(obj, self.name))
 
     def load(self, obj):
-        domain = get_domain()
+        domain = obj._manager.domain
         a = domain.get_attributes(obj.id, self.name)
         # try to get the attribute value from SDB
         if self.name in a:
-            value = self.checker.from_string(a[self.name])
+            value = self.checker.from_string(a[self.name], obj)
             setattr(obj, self.slot_name, value)
         # if it's not there, set the value to the default value
         else:
@@ -60,7 +59,7 @@ class ScalarProperty(Property):
             try:
                 value = getattr(obj, self.slot_name)
             except AttributeError:
-                if obj.auto_update:
+                if obj._auto_update:
                     self.load(obj)
                     value = getattr(obj, self.slot_name)
                 else:
@@ -75,7 +74,7 @@ class ScalarProperty(Property):
         except:
             old_value = self.checker.default
         setattr(obj, self.slot_name, value)
-        if obj.auto_update:
+        if obj._auto_update:
             try:
                 self.save(obj)
             except:
@@ -172,9 +171,9 @@ class S3KeyProperty(ScalarProperty):
         except:
             old_value = self.checker.default
         if isinstance(value, str):
-            value = self.checker.from_string(value)
+            value = self.checker.from_string(value, obj)
         setattr(obj, self.slot_name, value)
-        if obj.auto_update:
+        if obj._auto_update:
             try:
                 self.save(obj)
             except:
@@ -193,9 +192,9 @@ class S3BucketProperty(ScalarProperty):
         except:
             old_value = self.checker.default
         if isinstance(value, str):
-            value = self.checker.from_string(value)
+            value = self.checker.from_string(value, obj)
         setattr(obj, self.slot_name, value)
-        if obj.auto_update:
+        if obj._auto_update:
             try:
                 self.save(obj)
             except:
@@ -212,7 +211,7 @@ class MultiValueProperty(Property):
             try:
                 value = getattr(obj, self.slot_name)
             except AttributeError:
-                if obj.auto_update:
+                if obj._auto_update:
                     self.load(obj)
                     value = getattr(obj, self.slot_name)
                 else:
@@ -223,29 +222,45 @@ class MultiValueProperty(Property):
     def load(self, obj):
         if obj != None:
             _list = []
-            domain = get_domain()
+            domain = obj._manager.domain
             a = domain.get_attributes(obj.id, self.name)
             if self.name in a:
                 lst = a[self.name]
                 if not isinstance(lst, list):
                     lst = [lst]
                 for value in lst:
-                    value = self.checker.from_string(value)
+                    value = self.checker.from_string(value, obj)
                     _list.append(value)
         setattr(obj, self.slot_name, MultiValue(self, obj, _list))
 
     def __set__(self, obj, value):
         if not isinstance(value, list):
-            raise SDBPersistanceError('Value must be a list')
-        self._list = value
+            raise SDBPersistenceError('Value must be a list')
+        setattr(obj, self.slot_name, MultiValue(self, obj, value))
+        str_list = self.to_string(obj)
+        domain = obj._manager.domain
+        if obj._auto_update:
+            if len(str_list) == 1:
+                domain.put_attributes(obj.id, {self.name : str_list[0]}, replace=True)
+            else:
+                try:
+                    self.__delete__(obj)
+                except:
+                    pass
+                domain.put_attributes(obj.id, {self.name : str_list}, replace=True)
+                setattr(obj, self.slot_name, MultiValue(self, obj, value))
+
+    def __delete__(self, obj):
+        if obj._auto_update:
+            domain = obj._manager.domain
+            domain.delete_attributes(obj.id, [self.name])
+        setattr(obj, self.slot_name, MultiValue(self, obj, []))
+
+    def to_string(self, obj):
         str_list = []
-        for value in self._list:
+        for value in self.__get__(obj, type(obj)):
             str_list.append(self.checker.to_string(value))
-        domain = get_domain()
-        try:
-            domain.put_attributes(obj.id, {self.name : str_list}, replace=True)
-        except:
-            print 'problem setting value: %s' % value
+        return str_list
 
 class StringListProperty(MultiValueProperty):
 
@@ -334,12 +349,22 @@ class MultiValue:
     def __delitem__(self, key):
         item = self[key]
         self._list.__delitem__(key)
-        domain = get_domain()
+        domain = self.object._manager.domain
         domain.delete_attributes(self.object.id, {self.name: [self.checker.to_string(item)]})
+
+    def __len__(self):
+        return len(self._list)
 
     def append(self, value):
         self.checker.check(value)
         self._list.append(value)
-        domain = get_domain()
+        domain = self.object._manager.domain
         domain.put_attributes(self.object.id, {self.name: self.checker.to_string(value)}, replace=False)
 
+    def index(self, value):
+        for x in self._list:
+            if x.id == value.id:
+                return self._list.index(x)
+
+    def remove(self, value):
+        del(self[self.index(value)])

@@ -24,7 +24,7 @@ import os, sys
 import logging
 import logging.config
 
-Version = '1.2a'
+Version = '1.4c'
 UserAgent = 'Boto/%s (%s)' % (Version, sys.platform)
 config = Config()
 
@@ -35,7 +35,7 @@ def init_logging():
         except:
             pass
 
-log = logging
+log = logging.getLogger('boto')
 init_logging()
 
 # convenience function to set logging to a particular file
@@ -53,22 +53,72 @@ def set_file_logger(name, filepath, level=logging.INFO, format_string=None):
     log = logger
 
 def connect_sqs(aws_access_key_id=None, aws_secret_access_key=None, **kwargs):
+    """
+    @type aws_access_key_id: string
+    @param aws_access_key_id: Your AWS Access Key ID
+    
+    @type aws_secret_access_key: string
+    @param aws_secret_access_key: Your AWS Secret Access Key
+    
+    @rtype: L{SQSConnection<boto.sqs.connection.SQSConnection>}
+    @return: A connection to Amazon's SQS
+    """
     from boto.sqs.connection import SQSConnection
     return SQSConnection(aws_access_key_id, aws_secret_access_key, **kwargs)
     
 def connect_s3(aws_access_key_id=None, aws_secret_access_key=None, **kwargs):
+    """
+    @type aws_access_key_id: string
+    @param aws_access_key_id: Your AWS Access Key ID
+    
+    @type aws_secret_access_key: string
+    @param aws_secret_access_key: Your AWS Secret Access Key
+    
+    @rtype: L{S3Connection<boto.s3.connection.S3Connection>}
+    @return: A connection to Amazon's S3
+    """
     from boto.s3.connection import S3Connection
     return S3Connection(aws_access_key_id, aws_secret_access_key, **kwargs)
 
 def connect_ec2(aws_access_key_id=None, aws_secret_access_key=None, **kwargs):
+    """
+    @type aws_access_key_id: string
+    @param aws_access_key_id: Your AWS Access Key ID
+    
+    @type aws_secret_access_key: string
+    @param aws_secret_access_key: Your AWS Secret Access Key
+    
+    @rtype: L{EC2Connection<boto.ec2.connection.EC2Connection>}
+    @return: A connection to Amazon's EC2
+    """
     from boto.ec2.connection import EC2Connection
     return EC2Connection(aws_access_key_id, aws_secret_access_key, **kwargs)
 
 def connect_sdb(aws_access_key_id=None, aws_secret_access_key=None, **kwargs):
+    """
+    @type aws_access_key_id: string
+    @param aws_access_key_id: Your AWS Access Key ID
+    
+    @type aws_secret_access_key: string
+    @param aws_secret_access_key: Your AWS Secret Access Key
+    
+    @rtype: L{SDBConnection<boto.sdb.connection.SDBConnection>}
+    @return: A connection to Amazon's SDB
+    """
     from boto.sdb.connection import SDBConnection
     return SDBConnection(aws_access_key_id, aws_secret_access_key, **kwargs)
 
 def connect_fps(aws_access_key_id=None, aws_secret_access_key=None, **kwargs):
+    """
+    @type aws_access_key_id: string
+    @param aws_access_key_id: Your AWS Access Key ID
+    
+    @type aws_secret_access_key: string
+    @param aws_secret_access_key: Your AWS Secret Access Key
+    
+    @rtype: L{FPSConnection<boto.fps.connection.FPSConnection>}
+    @return: A connection to FPS
+    """
     from boto.fps.connection import FPSConnection
     return FPSConnection(aws_access_key_id, aws_secret_access_key, **kwargs)
 

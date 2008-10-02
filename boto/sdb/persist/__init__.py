@@ -21,50 +21,63 @@
 
 import boto
 from boto.utils import find_class
-from boto.exception import SDBPersistanceError
 
-__sdb = None
-__domain = None
-__s3_conn = None
-        
-def set_domain(domain_name, aws_access_key_id=None, aws_secret_access_key=None):
-    """
-    Set the domain in which persisted objects will be stored
-    """
-    global __sdb, __domain
-    __sdb = boto.connect_sdb(aws_access_key_id=aws_access_key_id,
-                             aws_secret_access_key=aws_secret_access_key)
-    __domain = __sdb.lookup(domain_name)
-    if not __domain:
-        __domain = __sdb.create_domain(domain_name)
+class Manager(object):
+
+    DefaultDomainName = boto.config.get('Persist', 'default_domain', None)
+
+    def __init__(self, domain_name=None, aws_access_key_id=None, aws_secret_access_key=None, debug=0):
+        self.domain_name = domain_name
+        self.aws_access_key_id = aws_access_key_id
+        self.aws_secret_access_key = aws_secret_access_key
+        self.domain = None
+        self.sdb = None
+        self.s3 = None
+        if not self.domain_name:
+            self.domain_name = self.DefaultDomainName
+            if self.domain_name:
+                boto.log.info('No SimpleDB domain set, using default_domain: %s' % self.domain_name)
+            else:
+                boto.log.warning('No SimpleDB domain set, persistance is disabled')
+        if self.domain_name:
+            self.sdb = boto.connect_sdb(aws_access_key_id=self.aws_access_key_id,
+                                        aws_secret_access_key=self.aws_secret_access_key,
+                                        debug=debug)
+            self.domain = self.sdb.lookup(self.domain_name)
+            if not self.domain:
+                self.domain = self.sdb.create_domain(self.domain_name)
+
+    def get_s3_connection(self):
+        if not self.s3:
+            self.s3 = boto.connect_s3(self.aws_access_key_id, self.aws_secret_access_key)
+        return self.s3
+
+def get_manager(domain_name=None, aws_access_key_id=None, aws_secret_access_key=None, debug=0):
+    return Manager(domain_name, aws_access_key_id, aws_secret_access_key, debug=debug)
+
+def set_domain(domain_name):
+    Manager.DefaultDomainName = domain_name
 
 def get_domain():
-    if __domain == None:
-        # check to see if a default domain is set in boto config
-        domain_name = boto.config.get('Persist', 'default_domain', None)
-        if domain_name:
-            boto.log.info('No SimpleDB domain set, using default_domain: %s' % domain_name)
-            set_domain(domain_name)
-        else:
-            boto.log.warning('No SimpleDB domain set, persistance is disabled')
-    return __domain
+    return Manager.DefaultDomainName
 
-def get_s3_connection():
-    global __s3_conn
-    if __s3_conn == None:
-        __s3_conn = boto.connect_s3()
-    return __s3_conn
+def revive_object_from_id(id, manager):
+    if not manager.domain:
+        return None
+    attrs = manager.domain.get_attributes(id, ['__module__', '__type__', '__lineage__'])
+    try:
+        cls = find_class(attrs['__module__'], attrs['__type__'])
+        return cls(id, manager=manager)
+    except ImportError:
+        return None
 
-def revive_object_from_id(id):
-    domain = get_domain()
-    attrs = domain.get_attributes(id, ['__module__', '__type__', '__lineage__'])
-    cls = find_class(attrs['__module__'], attrs['__type__'])
-    return cls(id)
-
-def object_lister(cls, query_lister):
+def object_lister(cls, query_lister, manager):
     for item in query_lister:
         if cls:
             yield cls(item.name)
         else:
-            yield revive_object_from_id(item.name)
+            o = revive_object_from_id(item.name, manager)
+            if o:
+                yield o
+                
 

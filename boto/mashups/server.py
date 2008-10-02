@@ -22,13 +22,14 @@
 """
 High-level abstraction of an EC2 server
 """
-import boto
+import boto, boto.utils
 from boto.mashups.iobject import IObject
 from boto.pyami.config import Config, BotoConfigPath
 from boto.mashups.interactive import interactive_shell
-from boto.sdb.persist.object import SDBObject
-from boto.sdb.persist.property import *
+from boto.sdb.db.model import Model
+from boto.sdb.db.property import *
 import os
+import StringIO
 
 class ServerSet(list):
 
@@ -54,7 +55,7 @@ class ServerSet(list):
             results.append(fn(*args))
         return results
 
-class Server(SDBObject):
+class Server(Model):
 
     ec2 = boto.connect_ec2()
 
@@ -65,7 +66,7 @@ class Server(SDBObject):
         persisted in the db
         """
         l = ServerSet()
-        rs = cls.list()
+        rs = cls.find()
         for server in rs:
             l.append(server)
         return l
@@ -79,9 +80,9 @@ class Server(SDBObject):
         s.save()
         return s
 
-    def __init__(self, id=None):
-        SDBObject.__init__(self, id)
-        self.reservation = None
+    def __init__(self, id=None, **kw):
+        Model.__init__(self, id, **kw)
+        self._reservation = None
         self._instance = None
         self._ssh_client = None
         self._pkey = None
@@ -89,6 +90,13 @@ class Server(SDBObject):
 
     name = StringProperty()
     instance_id = StringProperty()
+    config_uri = StringProperty()
+    ami_id = StringProperty()
+    zone = StringProperty()
+    security_group = StringProperty()
+    key_name = StringProperty()
+    elastic_ip = StringProperty()
+    instance_type = StringProperty()
     description = StringProperty()
 
     def setReadOnly(self, value):
@@ -99,8 +107,8 @@ class Server(SDBObject):
             if self.instance_id:
                 rs = self.ec2.get_all_instances([self.instance_id])
                 if len(rs) > 0:
-                    self.reservation = rs[0]
-                    self._instance = self.reservation.instances[0]
+                    self._reservation = rs[0]
+                    self._instance = self._reservation.instances[0]
         return self._instance
 
     instance = property(getInstance, setReadOnly, None, 'The Instance for the server')
@@ -126,6 +134,13 @@ class Server(SDBObject):
     hostname = property(getHostname, setReadOnly, None,
                         'The public DNS name of the server')
 
+    def getPrivateHostname(self):
+        if self.instance:
+            return self.instance.private_dns_name
+
+    private_hostname = property(getPrivateHostname, setReadOnly, None,
+                                'The private DNS name of the server')
+
     def getLaunchTime(self):
         if self.instance:
             return self.instance.launch_time
@@ -141,8 +156,8 @@ class Server(SDBObject):
                               'Retrieve the console output for server')
 
     def getGroups(self):
-        if self.reservation:
-            return self.reservation.groups
+        if self._reservation:
+            return self._reservation.groups
         else:
             return None
 
@@ -171,6 +186,40 @@ class Server(SDBObject):
     def stop(self):
         if self.instance:
             self.instance.stop()
+
+    def start(self):
+        self.stop()
+        ec2 = boto.connect_ec2()
+        ami = ec2.get_all_images(image_ids = [str(self.ami_id)])[0]
+        groups = ec2.get_all_security_groups(groupnames=[str(self.security_group)])
+        if not self._config:
+            self._config = Config(fp=boto.utils.fetch_file(self.config_uri))
+        if not self._config.has_section("Credentials"):
+            self._config.add_section("Credentials")
+            self._config.set("Credentials", "aws_access_key_id", ec2.aws_access_key_id)
+            self._config.set("Credentials", "aws_secret_access_key", ec2.aws_secret_access_key)
+
+        if not self._config.has_section("Pyami"):
+            self._config.add_section("Pyami")
+
+        if self._manager.domain:
+            self._config.set('Pyami', 'server_sdb_domain', self._manager.domain.name)
+            self._config.set("Pyami", 'server_sdb_name', self.name)
+
+        cfg = StringIO.StringIO()
+        self._config.write(cfg)
+        cfg = cfg.getvalue()
+        r = ami.run(min_count=1,
+                    max_count=1,
+                    key_name=self.key_name,
+                    security_groups = groups,
+                    instance_type = self.instance_type,
+                    placement = self.zone,
+                    user_data = cfg)
+        i = r.instances[0]
+        self.instance_id = i.id
+        if self.elastic_ip:
+            ec2.associate_address(self.instance_id, self.elastic_ip)
 
     def reboot(self):
         if self.instance:
@@ -234,11 +283,11 @@ class Server(SDBObject):
             pass
         command = 'ec2-bundle-vol '
         command += '-c %s -k %s ' % (remote_cert_file, remote_key_file)
-        command += '-u %s ' % self.reservation.owner_id
+        command += '-u %s ' % self._reservation.owner_id
         command += '-p %s ' % prefix
         command += '-s %d ' % size
         command += '-d /mnt '
-        if self.instance.instance_type == 'm1.small':
+        if self.instance.instance_type == 'm1.small' or self.instance_type == 'c1.medium':
             command += '-r i386'
         else:
             command += '-r x86_64'
@@ -281,6 +330,35 @@ class Server(SDBObject):
         print 'registering image...'
         self.image_id = self.ec2.register_image('%s/%s.manifest.xml' % (bucket, prefix))
         return self.image_id
+
+    def attatch_volume(self, volume, device="/dev/sdp"):
+        """
+        Attach an EBS volume to this server
+
+        @param volume: EBS Volume to attach
+        @type volume: boto.ec2.volume.Volume
+
+        @param device: Device to attach to (default to /dev/sdp)
+        @type device: string
+        """
+        if hasattr(volume, "id"):
+            volume_id = volume.id
+        else:
+            volume_id = volume
+        return self.ec2.attach_volume(volume_id=volume_id, instance_id=self.instance_id, device=device)
+
+    def detach_volume(self, volume):
+        """
+        Detach an EBS volume from this server
+
+        @param volume: EBS Volume to detach
+        @type volume: boto.ec2.volume.Volume
+        """
+        if hasattr(volume, "id"):
+            volume_id = volume.id
+        else:
+            volume_id = volume
+        return self.ec2.detach_volume(volume_id=volume_id, instance_id=self.instance_id)
 
     def install_package(self, package_name):
         print 'installing %s...' % package_name
