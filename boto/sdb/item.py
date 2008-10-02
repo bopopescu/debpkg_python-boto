@@ -24,6 +24,7 @@ Represents an SDB Item
 """
 
 from UserDict import DictMixin
+import base64
 
 class Item(DictMixin):
     
@@ -33,24 +34,39 @@ class Item(DictMixin):
         self._dict = None
         self.active = active
         self.request_id = None
+        self.encoding = None
+        self.in_attribute = False
 
     def startElement(self, name, attrs, connection):
+        if name == 'Attribute':
+            self.in_attribute = True
+        self.encoding = attrs.get('encoding', None)
         return None
+
+    def decode_value(self, value):
+        if self.encoding == 'base64':
+            self.encoding = None
+            return base64.decode(value)
+        else:
+            return value
 
     def endElement(self, name, value, connection):
         if name == 'ItemName':
-            self.name = value
+            self.name = self.decode_value(value)
         elif name == 'Name':
-            self.last_key = value
+            if self.in_attribute:
+                self.last_key = self.decode_value(value)
+            else:
+                self.name = self.decode_value(value)
         elif name == 'Value':
             if self._dict == None:
                 self._dict = {}
             if self._dict.has_key(self.last_key):
                 if not isinstance(self._dict[self.last_key], list):
                     self._dict[self.last_key] = [self._dict[self.last_key]]
-                self._dict[self.last_key].append(value)
+                self._dict[self.last_key].append(self.decode_value(value))
             else:
-                self._dict[self.last_key] = value
+                self._dict[self.last_key] = self.decode_value(value)
         elif name == 'BoxUsage':
             try:
                 connection.box_usage += float(value)
@@ -58,12 +74,13 @@ class Item(DictMixin):
                 pass
         elif name == 'RequestId':
             self.request_id = value
+        elif name == 'Attribute':
+            self.in_attribute = False
         else:
             setattr(self, name, value)
 
     def load(self):
-        if self._dict == None:
-            self._dict = {}
+        self._dict = {}
         self.domain.get_attributes(self.name, item=self)
 
     def save(self, replace=True):

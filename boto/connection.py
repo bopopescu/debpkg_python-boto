@@ -60,6 +60,38 @@ class AWSAuthConnection:
                  aws_secret_access_key=None, is_secure=True, port=None,
                  proxy=None, proxy_port=None, proxy_user=None,
                  proxy_pass=None, debug=0, https_connection_factory=None):
+        """
+        @type server: string
+        @param server: The server to make the connection to
+        
+        @type aws_access_key_id: string
+        @param aws_access_key_id: AWS Access Key ID (provided by Amazon)
+        
+        @type aws_secret_access_key: string
+        @param aws_secret_access_key: Secret Access Key (provided by Amazon)
+        
+        @type is_secure: boolean
+        @param is_secure: Whether the connection is over SSL
+        
+        @type https_connection_factory: list or tuple
+        @param https_connection_factory: A pair of an HTTP connection factory and the exceptions to catch. The factory should have a similar interface to L{httplib.HTTPSConnection}.
+        
+        @type proxy:
+        @param proxy:
+        
+        @type proxy_port: int
+        @param proxy_port: The port to use when connecting over a proxy
+        
+        @type proxy_user: string
+        @param proxy_user: The username to connect with on the proxy
+        
+        @type proxy_pass: string
+        @param proxy_pass: The password to use when connection over a proxy.
+        
+        @type port: integer
+        @param port: The port to use to connect
+        """
+        
         self.num_retries = 5
         self.is_secure = is_secure
         self.handle_proxy(proxy, proxy_port, proxy_user, proxy_pass)
@@ -77,7 +109,10 @@ class AWSAuthConnection:
         else:
             self.protocol = 'http'
         self.server = server
-        self.debug = config.getint('Boto', 'debug', debug)
+        if debug:
+            self.debug = debug
+        else:
+            self.debug = config.getint('Boto', 'debug', debug)
         if port:
             self.port = port
         else:
@@ -99,7 +134,7 @@ class AWSAuthConnection:
             self.aws_secret_access_key = config.get('Credentials', 'aws_secret_access_key')
 
         # initialize an HMAC for signatures, make copies with each request
-        self.hmac = hmac.new(key=self.aws_secret_access_key, digestmod=sha)
+        self.hmac = hmac.new(self.aws_secret_access_key, digestmod=sha)
 
         # cache up to 20 connections
         self._cache = boto.utils.LRUCache(20)
@@ -216,6 +251,13 @@ class AWSAuthConnection:
                 if response.status == 500 or response.status == 503:
                     boto.log.debug('received %d response, retrying in %d seconds' % (response.status, 2**i))
                     body = response.read()
+                elif response.status == 408:
+                    body = response.read()
+                    print '-------------------------'
+                    print '         4 0 8           '
+                    print 'path=%s' % path
+                    print body
+                    print '-------------------------'
                 elif response.status < 300 or response.status >= 400 or \
                         not location:
                     return response
@@ -307,9 +349,7 @@ class AWSQueryConnection(AWSAuthConnection):
         qs = ''
         for key in keys:
             hmac.update(key)
-            val = params[key]
-            if not isinstance(val, str) and not isinstance(val, unicode):
-                val = str(val)
+            val = unicode(params[key]).encode('utf-8')
             hmac.update(val)
             qs += key + '=' + urllib.quote(unicode(params[key]).encode('utf-8')) + '&'
         return (qs, base64.b64encode(hmac.digest()))
@@ -348,12 +388,14 @@ class AWSQueryConnection(AWSAuthConnection):
             
     # generics
 
-    def get_list(self, action, params, markers, path='/'):
+    def get_list(self, action, params, markers, path='/', parent=None):
+        if not parent:
+            parent = self
         response = self.make_request(action, params, path)
         body = response.read()
         if response.status == 200:
             rs = ResultSet(markers)
-            h = handler.XmlHandler(rs, self)
+            h = handler.XmlHandler(rs, parent)
             xml.sax.parseString(body, h)
             return rs
         else:
@@ -361,12 +403,14 @@ class AWSQueryConnection(AWSAuthConnection):
             boto.log.error('%s' % body)
             raise self.ResponseError(response.status, response.reason, body)
         
-    def get_object(self, action, params, cls, path='/'):
+    def get_object(self, action, params, cls, path='/', parent=None):
+        if not parent:
+            parent = self
         response = self.make_request(action, params, path)
         body = response.read()
         if response.status == 200:
-            obj = cls(self)
-            h = handler.XmlHandler(obj, self)
+            obj = cls(parent)
+            h = handler.XmlHandler(obj, parent)
             xml.sax.parseString(body, h)
             return obj
         else:
@@ -374,12 +418,14 @@ class AWSQueryConnection(AWSAuthConnection):
             boto.log.error('%s' % body)
             raise self.ResponseError(response.status, response.reason, body)
         
-    def get_status(self, action, params, path='/'):
+    def get_status(self, action, params, path='/', parent=None):
+        if not parent:
+            parent = self
         response = self.make_request(action, params, path)
         body = response.read()
         if response.status == 200:
             rs = ResultSet()
-            h = handler.XmlHandler(rs, self)
+            h = handler.XmlHandler(rs, parent)
             xml.sax.parseString(body, h)
             return rs.status
         else:

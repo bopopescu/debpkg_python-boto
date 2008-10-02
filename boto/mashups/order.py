@@ -30,7 +30,7 @@ from boto.pyami.config import Config
 from boto.sdb.persist import get_domain, set_domain
 import time, StringIO
 
-InstanceTypes = ['m1.small', 'm1.large', 'm1.xlarge']
+InstanceTypes = ['m1.small', 'm1.large', 'm1.xlarge', 'c1.medium', 'c1.xlarge']
 
 class Item(IObject):
     
@@ -106,7 +106,7 @@ class Item(IObject):
             self.config.add_section('Pyami')
         sdb_domain = get_domain()
         if sdb_domain:
-            self.config.set('Pyami', 'server_sdb_domain', sdb_domain.name)
+            self.config.set('Pyami', 'server_sdb_domain', sdb_domain)
             self.config.set('Pyami', 'server_sdb_name', self.name)
 
     def set_config(self, config_path=None):

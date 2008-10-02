@@ -20,9 +20,11 @@
 # IN THE SOFTWARE.
 
 from datetime import datetime
+import boto
 from boto.s3.key import Key
-from boto.sdb.persist import revive_object_from_id, get_s3_connection
-from boto.exception import SDBPersistanceError
+from boto.s3.bucket import Bucket
+from boto.sdb.persist import revive_object_from_id
+from boto.exception import SDBPersistenceError
 from boto.utils import Password
 
 ISO8601 = '%Y-%m-%dT%H:%M:%SZ'
@@ -37,7 +39,7 @@ class ValueChecker:
         """
         raise TypeError
 
-    def from_string(self, str_value):
+    def from_string(self, str_value, obj):
         """
         Takes a string as input and returns the type-specific value represented by that string.
 
@@ -73,7 +75,7 @@ class StringChecker(ValueChecker):
         else:
             raise TypeError, 'Expecting String, got %s' % type(value)
 
-    def from_string(self, str_value):
+    def from_string(self, str_value, obj):
         return str_value
 
     def to_string(self, value):
@@ -116,7 +118,7 @@ class IntegerChecker(ValueChecker):
         if value < min:
             raise ValueError, 'Minimum value is %d' % min
 
-    def from_string(self, str_value):
+    def from_string(self, str_value, obj):
         val = int(str_value)
         if self.signed:
             val = val + self.__sizes__[self.size][2]
@@ -140,7 +142,7 @@ class BooleanChecker(ValueChecker):
         if not isinstance(value, bool):
             raise TypeError, 'Expecting bool, got %s' % type(value)
 
-    def from_string(self, str_value):
+    def from_string(self, str_value, obj):
         if str_value.lower() == 'true':
             return True
         else:
@@ -169,11 +171,11 @@ class DateTimeChecker(ValueChecker):
         if not isinstance(value, datetime):
             raise TypeError, 'Expecting datetime, got %s' % type(value)
 
-    def from_string(self, str_value):
+    def from_string(self, str_value, obj):
         try:
             return datetime.strptime(str_value, ISO8601)
         except:
-            raise ValueError
+            raise ValueError, 'Unable to convert %s to DateTime' % str_value
 
     def to_string(self, value):
         self.check(value)
@@ -185,30 +187,40 @@ class ObjectChecker(ValueChecker):
         self.default = None
         self.ref_class = params.get('ref_class', None)
         if self.ref_class == None:
-            raise SDBPersistanceError('ref_class parameter is required')
+            raise SDBPersistenceError('ref_class parameter is required')
 
     def check(self, value):
         if value == None:
             return
-        try:
-            obj_lineage = value.get_lineage()
-            cls_lineage = self.ref_class.get_lineage()
-            if obj_lineage.startswith(cls_lineage):
-                return
-            raise TypeError, '%s not instance of %s' % (obj_lineage, cls_lineage)
-        except:
-            raise ValueError, '%s is not an SDBObject' % value
+        if isinstance(value, str) or isinstance(value, unicode):
+            # ugly little hack - sometimes I want to just stick a UUID string
+            # in here rather than instantiate an object. 
+            # This does a bit of hand waving to "type check" the string
+            t = value.split('-')
+            if len(t) != 5:
+                raise ValueError
+        else:
+            try:
+                obj_lineage = value.get_lineage()
+                cls_lineage = self.ref_class.get_lineage()
+                if obj_lineage.startswith(cls_lineage):
+                    return
+                raise TypeError, '%s not instance of %s' % (obj_lineage, cls_lineage)
+            except:
+                raise ValueError, '%s is not an SDBObject' % value
 
-    def from_string(self, str_value):
+    def from_string(self, str_value, obj):
         if not str_value:
             return None
         try:
-            return revive_object_from_id(str_value)
+            return revive_object_from_id(str_value, obj._manager)
         except:
-            raise ValueError
+            raise ValueError, 'Unable to convert %s to Object' % str_value
 
     def to_string(self, value):
         self.check(value)
+        if isinstance(value, str) or isinstance(value, unicode):
+            return value
         if value == None:
             return ''
         else:
@@ -224,32 +236,35 @@ class S3KeyChecker(ValueChecker):
             return
         if isinstance(value, str) or isinstance(value, unicode):
             try:
-                bucket_name, key_name = value.split('/')
+                bucket_name, key_name = value.split('/', 1)
             except:
                 raise ValueError
         elif not isinstance(value, Key):
             raise TypeError, 'Expecting Key, got %s' % type(value)
 
-    def from_string(self, str_value):
+    def from_string(self, str_value, obj):
         if not str_value:
-            return
+            return None
+        if str_value == 'None':
+            return None
         try:
-            bucket_name, key_name = str_value.split('/')
-            s3 = get_s3_connection()
-            bucket = s3.get_bucket(bucket_name)
-            key = bucket.get_key(key_name)
-            if not key:
-                key = bucket.new_key(key_name)
-            return key
+            bucket_name, key_name = str_value.split('/', 1)
+            if obj:
+                s3 = obj._manager.get_s3_connection()
+                bucket = s3.get_bucket(bucket_name)
+                key = bucket.get_key(key_name)
+                if not key:
+                    key = bucket.new_key(key_name)
+                return key
         except:
-            raise ValueError
+            raise ValueError, 'Unable to convert %s to S3Key' % str_value
 
     def to_string(self, value):
         self.check(value)
         if isinstance(value, str) or isinstance(value, unicode):
             return value
         if value == None:
-            return None
+            return ''
         else:
             return '%s/%s' % (value.bucket.name, value.name)
 
@@ -261,23 +276,28 @@ class S3BucketChecker(ValueChecker):
     def check(self, value):
         if value == None:
             return
-        if not isinstance(value, str):
-            raise TypeError
-
-    def from_string(self, str_value):
-        if not str_value:
+        if isinstance(value, str) or isinstance(value, unicode):
             return
+        elif not isinstance(value, Bucket):
+            raise TypeError, 'Expecting Bucket, got %s' % type(value)
+
+    def from_string(self, str_value, obj):
+        if not str_value:
+            return None
+        if str_value == 'None':
+            return None
         try:
-            s3 = get_s3_connection()
-            bucket = s3.get_bucket(str_value)
-            return bucket
+            if obj:
+                s3 = obj._manager.get_s3_connection()
+                bucket = s3.get_bucket(str_value)
+                return bucket
         except:
-            raise ValueError
+            raise ValueError, 'Unable to convert %s to S3Bucket' % str_value
 
     def to_string(self, value):
         self.check(value)
         if value == None:
-            return None
+            return ''
         else:
-            return '%s' % value.bucket.name
+            return '%s' % value.name
 

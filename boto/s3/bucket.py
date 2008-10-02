@@ -26,7 +26,7 @@ from boto.s3.acl import Policy, CannedACLStrings, ACL, Grant
 from boto.s3.user import User
 from boto.s3.key import Key
 from boto.s3.prefix import Prefix
-from boto.exception import S3ResponseError, S3PermissionsError
+from boto.exception import S3ResponseError, S3PermissionsError, S3CopyError
 from boto.s3.bucketlistresultset import BucketListResultSet
 import boto.utils
 import xml.sax
@@ -61,6 +61,9 @@ class Bucket:
     def __iter__(self):
         return iter(BucketListResultSet(self))
 
+    def __contains__(self, key_name):
+       return not (self.get_key(key_name) is None)
+
     def startElement(self, name, attrs, connection):
         return None
 
@@ -80,12 +83,21 @@ class Bucket:
         bucket so that when you call bucket.new_key() or when you get a listing
         of keys in the bucket you will get an instances of your key class
         rather than the default.
+        
+        @type key_class: class
+        @param key_class: A subclass of Key that can be more specific
         """
         self.key_class = key_class
 
     def lookup(self, key_name):
         """
         Deprecated: Please use get_key method.
+        
+        @type key_name: string
+        @param key_name: The name of the key to retrieve
+        
+        @rtype: L{Key<boto.s3.key.Key>}
+        @returns: A Key object from this bucket.
         """
         return self.get_key(key_name)
         
@@ -94,6 +106,12 @@ class Bucket:
         Check to see if a particular key exists within the bucket.  This
         method uses a HEAD request to check for the existance of the key.
         Returns: An instance of a Key object or None
+        
+        @type key_name: string
+        @param key_name: The name of the key to retrieve
+        
+        @rtype: L{Key<boto.s3.key.Key>}
+        @returns: A Key object from this bucket.
         """
         response = self.connection.make_request('HEAD', self.name, key_name)
         if response.status == 200:
@@ -102,8 +120,9 @@ class Bucket:
             k.metadata = boto.utils.get_aws_metadata(response.msg)
             k.etag = response.getheader('etag')
             k.content_type = response.getheader('content-type')
+            k.content_encoding = response.getheader('content-encoding')
             k.last_modified = response.getheader('last-modified')
-            k.size = response.getheader('content-length')
+            k.size = int(response.getheader('content-length'))
             k.name = key_name
             return k
         else:
@@ -125,14 +144,21 @@ class Bucket:
         there are no more results.
         Called with no arguments, this will return an iterator object across
         all keys within the bucket.
-        The prefix parameter allows you to limit the listing to a particular
-        prefix.  For example, if you call the method with prefix='/foo/'
-        then the iterator will only cycle through the keys that begin with
-        the string '/foo/'.
-        The delimiter parameter can be used in conjunction with the prefix
-        to allow you to organize and browse your keys hierarchically. See:
-        http://docs.amazonwebservices.com/AmazonS3/2006-03-01/
-        for more details.
+        
+        @type prefix: string
+        @param prefix: allows you to limit the listing to a particular
+                        prefix.  For example, if you call the method with prefix='/foo/'
+                        then the iterator will only cycle through the keys that begin with
+                        the string '/foo/'.
+                        
+        @type delimiter: string
+        @param delimiter: can be used in conjunction with the prefix
+                        to allow you to organize and browse your keys hierarchically. See:
+                        http://docs.amazonwebservices.com/AmazonS3/2006-03-01/
+                        for more details.
+                        
+        @rtype: L{BucketListResultSet<boto.s3.bucketlistresultset.BucketListResultSet>}
+        @return: an instance of a BucketListResultSet that handles paging, etc
         """
         return BucketListResultSet(self, prefix, delimiter)
 
@@ -144,6 +170,22 @@ class Bucket:
         as defined in S3 Developer's Guide, however since max-keys is not
         a legal variable in Python you have to pass maxkeys and this
         method will munge it (Ugh!)
+        
+        @type maxkeys: int
+        @param maxkeys: The maximum number of keys to retrieve
+        
+        @type prefix: string
+        @param prefix: The prefix of the keys you want to retrieve
+        
+        @type marker: string
+        @param marker: The "marker" of where you are in the result set
+        
+        @type delimiter: string 
+        @param delimiter: "If this optional, Unicode string parameter is included with your request, then keys that contain the same string between the prefix and the first occurrence of the delimiter will be rolled up into a single result element in the CommonPrefixes collection. These rolled-up keys are not returned elsewhere in the response."
+
+        @rtype: ResultSet
+        @return: The result from S3 listing the keys requested
+        
         """
         l = []
         for k,v in params.items():
@@ -170,15 +212,73 @@ class Bucket:
             raise S3ResponseError(response.status, response.reason, body)
 
     def new_key(self, key_name=None):
+        """
+        Creates a new key
+        
+        @type key_name: string
+        @param key_name: The name of the key to create
+        
+        @rtype: L{Key<boto.s3.key.Key>} or subclass
+        @returns: An instance of the newly created key object
+        """
         return self.key_class(self, key_name)
 
     def generate_url(self, expires_in, method='GET', headers=None):
         return self.connection.generate_url(expires_in, method, self.name, headers=headers)
 
     def delete_key(self, key_name):
+        """
+        Deletes a key from the bucket.
+        
+        @type key_name: string
+        @param key_name: The key name to delete
+        """
         response = self.connection.make_request('DELETE', self.name, key_name)
         body = response.read()
         if response.status != 204:
+            raise S3ResponseError(response.status, response.reason, body)
+
+    def copy_key(self, new_key_name, src_bucket_name, src_key_name, metadata=None):
+        """
+        Create a new key in the bucket by copying another existing key.
+
+        @type new_key_name: string
+        @param new_key_name: The name of the new key
+
+        @type src_bucket_name: string
+        @param src_bucket_name: The name of the source bucket
+
+        @type src_key_name: string
+        @param src_key_name: The name of the source key
+
+        @type metadata: dict
+        @param metadata: Metadata to be associated with new key.
+                         If metadata is supplied, it will replace the
+                         metadata of the source key being copied.
+                         If no metadata is supplied, the source key's
+                         metadata will be copied to the new key.
+
+        @rtype: L{Key<boto.s3.key.Key>} or subclass
+        @returns: An instance of the newly created key object
+        """
+        if metadata:
+            headers = {'x-amz-copy-source' : '%s/%s' % (src_bucket_name, src_key_name),
+                       'x-amz-metadata-directive' : 'REPLACE'}
+            headers = boto.utils.merge_meta(headers, metadata)
+        else:
+            headers = {'x-amz-copy-source' : '%s/%s' % (src_bucket_name, src_key_name),
+                       'x-amz-metadata-directive' : 'COPY'}
+        response = self.connection.make_request('PUT', self.name, new_key_name,
+                                                headers=headers)
+        body = response.read()
+        if response.status == 200:
+            key = self.new_key(new_key_name)
+            h = handler.XmlHandler(key, self)
+            xml.sax.parseString(body, h)
+            if hasattr(key, 'Error'):
+                raise S3CopyError(key.Code, key.Message, body)
+            return key
+        else:
             raise S3ResponseError(response.status, response.reason, body)
 
     def set_canned_acl(self, acl_str, key_name=''):
@@ -222,6 +322,12 @@ class Bucket:
         else:
             raise S3ResponseError(response.status, response.reason, body)
 
+    def make_public(self, recursive=False):
+        self.set_canned_acl('public-read')
+        if recursive:
+            for key in self:
+                self.set_canned_acl('public-read', key.name)
+
     def add_email_grant(self, permission, email_address, recursive=False):
         """
         Convenience method that provides a quick way to add an email grant to a bucket.
@@ -256,20 +362,23 @@ class Bucket:
         Convenience method that provides a quick way to add a canonical user grant to a bucket.
         This method retrieves the current ACL, creates a new grant based on the parameters
         passed in, adds that grant to the ACL and then PUT's the new ACL back to S3.
-        Inputs:
-            permission - The permission being granted.  Should be one of:
-                         READ|WRITE|READ_ACP|WRITE_ACP|FULL_CONTROL
-                         See http://docs.amazonwebservices.com/AmazonS3/2006-03-01/UsingAuthAccess.html
-                         for more details on permissions.
-            user_id - The canonical user id associated with the AWS account your are granting
-                      the permission to.
-            recursive - A boolean value to controls whether the command will apply the
-                        grant to all keys within the bucket or not.  The default value is False.
-                        By passing a True value, the call will iterate through all keys in the
-                        bucket and apply the same grant to each key.
-                        CAUTION: If you have a lot of keys, this could take a long time!
-        Returns:
-            Nothing
+        
+        @type permission: string
+        @param permission:  The permission being granted.  Should be one of:
+                            READ|WRITE|READ_ACP|WRITE_ACP|FULL_CONTROL
+                            See http://docs.amazonwebservices.com/AmazonS3/2006-03-01/UsingAuthAccess.html
+                            for more details on permissions.
+                            
+        @type user_id: string
+        @param user_id:     The canonical user id associated with the AWS account your are granting
+                            the permission to.
+                            
+        @type recursive: bool
+        @param recursive:   A boolean value that controls whether the command will apply the
+                            grant to all keys within the bucket or not.  The default value is False.
+                            By passing a True value, the call will iterate through all keys in the
+                            bucket and apply the same grant to each key.
+                            CAUTION: If you have a lot of keys, this could take a long time!
         """
         if permission not in S3Permissions:
             raise S3PermissionsError('Unknown Permission: %s' % permission)
@@ -329,3 +438,6 @@ class Bucket:
         policy.acl.add_grant(g1)
         policy.acl.add_grant(g2)
         self.set_acl(policy)
+
+    def delete(self):
+        return self.connection.delete_bucket(self.name)

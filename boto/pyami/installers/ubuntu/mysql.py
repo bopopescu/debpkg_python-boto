@@ -40,8 +40,14 @@ class MySQL(Installer):
 
     def change_data_dir(self):
         fresh_install = False;
-        time.sleep(2) #trying to stop mysql immediately after installing it fails
-        self.stop('mysql')
+        time.sleep(10) #trying to stop mysql immediately after installing it fails
+        # We need to wait until mysql creates the root account before we kill it
+        # or bad things will happen
+        while self.run("echo 'quit' | mysql -u root") != 0:
+            time.sleep(5)
+        if self.run('/etc/init.d/mysql stop') != 0:
+            self.run("killall -9 mysql")
+
         if not os.path.exists('/mnt/mysql'):
             self.run('mkdir /mnt/mysql')
             fresh_install = True;
@@ -55,7 +61,6 @@ class MySQL(Installer):
         fp.close()
         if fresh_install:
             self.run('cp -pr /var/lib/mysql/* /mnt/mysql/')
-            self.run('cp -pr /var/log/mysql/* /mnt/mysql/')
             self.start('mysql')
         else:
             #get the password ubuntu expects to use:
@@ -64,9 +69,10 @@ class MySQL(Installer):
             password = config_parser.get('client', 'password')
             # start the mysql deamon, then mysql with the required grant statement piped into it:
             self.start('mysql')
-            time.sleep(1) #time for mysql to start
+            time.sleep(10) #time for mysql to start
             grant_command = "echo \"GRANT ALL PRIVILEGES ON *.* TO 'debian-sys-maint'@'localhost' IDENTIFIED BY '%s' WITH GRANT OPTION;\" | mysql" % password
-            self.run(grant_command)
+            while self.run(grant_command) != 0:
+                time.sleep(5)
             # leave mysqld running
 
     def main(self):

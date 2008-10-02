@@ -167,15 +167,19 @@ def get_ts(ts=None):
 def parse_ts(ts):
     return datetime.datetime.strptime(ts, ISO8601)
 
-def find_class(module_name, class_name):
+def find_class(module_name, class_name=None):
+    if class_name:
+        module_name = "%s.%s" % (module_name, class_name)
     modules = module_name.split('.')
     path = None
-    for module_name in modules:
-        fp, pathname, description = imp.find_module(module_name, path)
-        module = imp.load_module(module_name, fp, pathname, description)
-        if hasattr(module, '__path__'):
-            path = module.__path__
-    return getattr(module, class_name)
+    c = None
+
+    for m in modules[1:]:
+        if c:
+            c = getattr(c, m)
+        else:
+            c = getattr(__import__(".".join(modules[0:-1])), m)
+    return c
     
 def update_dme(username, password, dme_id, ip_address):
     """
@@ -186,29 +190,36 @@ def update_dme(username, password, dme_id, ip_address):
     s = urllib2.urlopen(dme_url % (username, password, dme_id, ip_address))
     return s.read()
 
-def fetch_file(uri, file=None):
+def fetch_file(uri, file=None, username=None, password=None):
     """
     Fetch a file based on the URI provided. If you do not pass in a file pointer
     a tempfile.NamedTemporaryFile, or None if the file could not be 
     retrieved is returned.
-    The URI can be either an HTTP url, or "s3:bucket_name/key_name"
+    The URI can be either an HTTP url, or "s3://bucket_name/key_name"
     """
     boto.log.info('Fetching %s' % uri)
     if file == None:
         file = tempfile.NamedTemporaryFile()
     try:
         working_dir = boto.config.get("General", "working_dir")
-        if uri.startswith('s3:'):
-            bucket_name, key_name = uri[len('s3:'):].split('/')
+        if uri.startswith('s3://'):
+            bucket_name, key_name = uri[len('s3://'):].split('/')
             c = boto.connect_s3()
             bucket = c.get_bucket(bucket_name)
             key = bucket.get_key(key_name)
             key.get_contents_to_file(file)
-        elif uri.startswith('http'):
+        else:
+            if username and password:
+                passman = urllib2.HTTPPasswordMgrWithDefaultRealm()
+                passman.add_password(None, uri, username, password)
+                authhandler = urllib2.HTTPBasicAuthHandler(passman)
+                opener = urllib2.build_opener(authhandler)
+                urllib2.install_opener(opener)
             s = urllib2.urlopen(uri)
             file.write(s.read())
         file.seek(0)
     except:
+        raise
         boto.log.exception('Problem Retrieving file: %s' % uri)
         file = None
     return file
@@ -440,7 +451,7 @@ class Password:
         return str(self.str)
    
     def __eq__(self, other):
-        return str(_hashfn(value).hexdigest()) == str(self.str)
+        return str(_hashfn(other).hexdigest()) == str(self.str)
 
     def __len__(self):
         return len(self.str)
