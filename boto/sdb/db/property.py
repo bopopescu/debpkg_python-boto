@@ -34,7 +34,7 @@ class Property(object):
     name = None
 
     def __init__(self, verbose_name=None, name=None, default=None, required=False,
-                 validator=None, choices=None):
+                 validator=None, choices=None, unique=False):
         self.verbose_name = verbose_name
         self.name = name
         self.default = default
@@ -42,6 +42,7 @@ class Property(object):
         self.validator = validator
         self.choices = choices
         self.slot_name = '_'
+        self.unique = unique
         
     def __get__(self, obj, objtype):
         if obj:
@@ -115,8 +116,8 @@ def validate_string(value):
 class StringProperty(Property):
 
     def __init__(self, verbose_name=None, name=None, default='', required=False,
-                 validator=validate_string, choices=None):
-        Property.__init__(self, verbose_name, name, default, required, validator, choices)
+                 validator=validate_string, choices=None, unique=False):
+        Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
 
 def validate_text(value):
     if not isinstance(value, str) and not isinstance(value, unicode):
@@ -125,8 +126,8 @@ def validate_text(value):
 class TextProperty(Property):
     
     def __init__(self, verbose_name=None, name=None, default='', required=False,
-                 validator=validate_text, choices=None):
-        Property.__init__(self, verbose_name, name, default, required, validator, choices)
+                 validator=validate_text, choices=None, unique=False):
+        Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
 
 class PasswordProperty(StringProperty):
     """
@@ -136,8 +137,8 @@ class PasswordProperty(StringProperty):
     data_type = Password
 
     def __init__(self, verbose_name=None, name=None, default='', required=False,
-                 validator=None, choices=None):
-        StringProperty.__init__(self, verbose_name, name, default, required, validator, choices)
+                 validator=None, choices=None, unique=False):
+        StringProperty.__init__(self, verbose_name, name, default, required, validator, choices, unique)
 
     def make_value_from_datastore(self, value):
         p = Password(value)
@@ -170,30 +171,33 @@ class S3KeyProperty(Property):
     data_type = boto.s3.key.Key
 
     def __init__(self, verbose_name=None, name=None, default=None,
-                 required=False, validator=None, choices=None):
+                 required=False, validator=None, choices=None, unique=False):
         Property.__init__(self, verbose_name, name, default, required,
-                          validator, choices)
+                          validator, choices, unique)
         self.s3 = boto.connect_s3()
         
     def make_value_from_datastore(self, value):
         match = re.match("^s3:\/\/([^\/]*)\/(.*)$", value)
         if match:
-            bucket = self.s3.get_bucket(match.group(1))
+            bucket = self.s3.get_bucket(match.group(1), validate=False)
             return bucket.get_key(match.group(2))
         else:
             return None
     
     def get_value_for_datastore(self, model_instance):
         value = Property.get_value_for_datastore(self, model_instance)
-        return "s3://%s/%s" % (value.bucket.name, value.name)
+        if value:
+            return "s3://%s/%s" % (value.bucket.name, value.name)
+        else:
+            return None
 
 class IntegerProperty(Property):
 
     data_type = int
 
     def __init__(self, verbose_name=None, name=None, default=0, required=False,
-                 validator=None, choices=None):
-        Property.__init__(self, verbose_name, name, default, required, validator, choices)
+                 validator=None, choices=None, unique=False):
+        Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
 
     def default_validator(self, value):
         if not isinstance(value, int):
@@ -216,8 +220,8 @@ class LongProperty(Property):
     data_type = long
 
     def __init__(self, verbose_name=None, name=None, default=0, required=False,
-                 validator=None, choices=None):
-        Property.__init__(self, verbose_name, name, default, required, validator, choices)
+                 validator=None, choices=None, unique=False):
+        Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
 
     def default_validator(self, value):
         if not isinstance(value, long):
@@ -240,8 +244,8 @@ class BooleanProperty(Property):
     data_type = bool
 
     def __init__(self, verbose_name=None, name=None, default=False, required=False,
-                 validator=None, choices=None):
-        Property.__init__(self, verbose_name, name, default, required, validator, choices)
+                 validator=None, choices=None, unique=False):
+        Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
 
     def empty(self, value):
         return value is None
@@ -251,8 +255,8 @@ class DateTimeProperty(Property):
     data_type = datetime.datetime
 
     def __init__(self, verbose_name=None, auto_now=False, auto_now_add=False, name=None,
-                 default=None, required=False, validator=None, choices=None):
-        Property.__init__(self, verbose_name, name, default, required, validator, choices)
+                 default=None, required=False, validator=None, choices=None, unique=False):
+        Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
         self.auto_now = auto_now
         self.auto_now_add = auto_now_add
 
@@ -277,8 +281,8 @@ class ReferenceProperty(Property):
     data_type = Key
 
     def __init__(self, reference_class=None, collection_name=None,
-                 verbose_name=None, name=None, default=None, required=False, validator=None, choices=None):
-        Property.__init__(self, verbose_name, name, default, required, validator, choices)
+                 verbose_name=None, name=None, default=None, required=False, validator=None, choices=None, unique=False):
+        Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
         self.reference_class = reference_class
         self.collection_name = collection_name
         
@@ -336,16 +340,19 @@ class CalculatedProperty(Property):
 
     def __init__(self, verbose_name=None, name=None, default=None,
                  required=False, validator=None, choices=None,
-                 calculated_type=int):
+                 calculated_type=int, unique=False, use_method=False):
         Property.__init__(self, verbose_name, name, default, required,
-                          validator, choices)
+                          validator, choices, unique)
         self.calculated_type = calculated_type
+        self.use_method = use_method
         
     def __get__(self, obj, objtype):
         value = self.default_value()
         if obj:
             try:
                 value = getattr(obj, self.slot_name)
+                if self.use_method:
+                    value = value()
             except AttributeError:
                 pass
         return value
@@ -355,7 +362,11 @@ class CalculatedProperty(Property):
         pass
 
     def _set_direct(self, obj, value):
-        setattr(obj, self.slot_name, value)
+        if not self.use_method:
+            setattr(obj, self.slot_name, value)
+
+    def get_value_for_datastore(self, model_instance):
+        return None
 
 class ListProperty(Property):
     
@@ -393,4 +404,3 @@ class ListProperty(Property):
 
     def default_value(self):
         return list(super(ListProperty, self).default_value())
-

@@ -24,7 +24,6 @@ import datetime
 
 from boto import handler
 from boto.mturk.price import Price
-from boto.mturk.question import QuestionForm
 import boto.mturk.notification
 from boto.connection import AWSQueryConnection
 from boto.exception import EC2ResponseError
@@ -120,7 +119,7 @@ class MTurkConnection(AWSQueryConnection):
     def create_hit(self, hit_type=None, question=None, lifetime=60*60*24*7, max_assignments=1, 
                    title=None, description=None, keywords=None, reward=None,
                    duration=60*60*24*7, approval_delay=None, annotation=None, qual_req=None, 
-                   questions=None, response_groups=None):
+                   questions=None, qualifications=None, response_groups=None):
         """
         Creates a new HIT.
         Returns a ResultSet
@@ -133,11 +132,9 @@ class MTurkConnection(AWSQueryConnection):
         if question is not None and questions is None:
             questions = [question]
         
-        # Set up QuestionForm data structure
-        qf = QuestionForm(questions=questions)
         
         # Handle basic required arguments and set up params dict
-        params = {'Question': qf.get_as_xml(),
+        params = {'Question': question.get_as_xml(),
                   'LifetimeInSeconds' : lifetime,
                   'MaxAssignments' : max_assignments,
                   }
@@ -170,6 +167,10 @@ class MTurkConnection(AWSQueryConnection):
         if annotation is not None:
             params['RequesterAnnotation'] = annotation
                
+        # Add the Qualifications if specified
+        if qualifications is not None:
+            params.update(qualifications.get_as_params())
+
         # Handle optional response groups argument
         if response_groups:
             self.build_list_params(params, response_groups, 'ResponseGroup')
@@ -344,6 +345,21 @@ class MTurkConnection(AWSQueryConnection):
         """
         params = {'About': about, 'HelpType': help_type,}
         return self._process_request('Help', params)
+
+    def grant_bonus(self, worker_id, assignment_id, bonus_price, reason):
+        """
+        Issues a payment of money from your account to a Worker.
+        To be eligible for a bonus, the Worker must have submitted results for one of your
+        HITs, and have had those results approved or rejected. This payment happens separately
+        from the reward you pay to the Worker when you approve the Worker's assignment.
+        The Bonus must be passed in as an instance of the Price object.
+        """
+        params = bonus_price.get_as_params('BonusAmount', 1)
+        params['WorkerId'] = worker_id
+        params['AssignmentId'] = assignment_id
+        params['Reason'] = reason
+
+        return self._process_request('GrantBonus', params)
 
     def _process_request(self, request_type, params, marker_elems=None):
         """

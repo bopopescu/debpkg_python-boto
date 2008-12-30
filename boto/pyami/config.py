@@ -21,21 +21,24 @@
 #
 import StringIO, os
 import ConfigParser
+import boto
 
 BotoConfigLocations = ['/etc/boto.cfg', os.path.expanduser('~/.boto')]
 BotoConfigPath = BotoConfigLocations[0]
+UserConfigPath = BotoConfigLocations[1]
 
 class Config(ConfigParser.SafeConfigParser):
 
-    def __init__(self, path=None, fp=None):
+    def __init__(self, path=None, fp=None, do_load=True):
         ConfigParser.SafeConfigParser.__init__(self, {'working_dir' : '/mnt/pyami',
                                                       'debug' : '0'})
-        if path:
-            self.read(path)
-        elif fp:
-            self.readfp(fp)
-        else:
-            self.read(BotoConfigLocations)
+        if do_load:
+            if path:
+                self.read(path)
+            elif fp:
+                self.readfp(fp)
+            else:
+                self.read(BotoConfigLocations)
 
     def save_option(self, path, section, option, value):
         """
@@ -56,7 +59,7 @@ class Config(ConfigParser.SafeConfigParser):
         self.set(section, option, value)
 
     def save_user_option(self, section, option, value):
-        self.save_option(os.path.expanduser(UserConfigPath), section, option, value)
+        self.save_option(UserConfigPath, section, option, value)
 
     def save_system_option(self, section, option, value):
         self.save_option(BotoConfigPath, section, option, value)
@@ -139,3 +142,35 @@ class Config(ConfigParser.SafeConfigParser):
                 else:
                     fp.write('%s = %s\n' % (option, self.get(section, option)))
     
+    def dump_to_sdb(self, domain_name, item_name):
+        import simplejson
+        sdb = boto.connect_sdb()
+        domain = sdb.lookup(domain_name)
+        if not domain:
+            domain = sdb.create_domain(domain_name)
+        item = domain.new_item(item_name)
+        item.active = False
+        for section in self.sections():
+            d = {}
+            for option in self.options(section):
+                d[option] = self.get(section, option)
+            item[section] = simplejson.dumps(d)
+        item.save()
+
+    def load_from_sdb(self, domain_name, item_name):
+        import simplejson
+        sdb = boto.connect_sdb()
+        domain = sdb.lookup(domain_name)
+        item = domain.get_item(item_name)
+        for section in item.keys():
+            if not self.has_section(section):
+                self.add_section(section)
+            d = simplejson.loads(item[section])
+            for attr_name in d.keys():
+                attr_value = d[attr_name]
+                if attr_value == None:
+                    attr_value = 'None'
+                if isinstance(attr_value, bool):
+                    self.setbool(section, attr_name, attr_value)
+                else:
+                    self.set(section, attr_name, attr_value)
