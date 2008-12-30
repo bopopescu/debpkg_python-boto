@@ -49,15 +49,15 @@ class SDBConverter:
                           Key : (self.encode_reference, self.decode_reference),
                           datetime : (self.encode_datetime, self.decode_datetime)}
 
-    def encode(self, type, value):
-        if type in self.type_map:
-            encode = self.type_map[type][0]
+    def encode(self, item_type, value):
+        if item_type in self.type_map:
+            encode = self.type_map[item_type][0]
             return encode(value)
         return value
 
-    def decode(self, type, value):
-        if type in self.type_map:
-            decode = self.type_map[type][1]
+    def decode(self, item_type, value):
+        if item_type in self.type_map:
+            decode = self.type_map[item_type][1]
             return decode(value)
         return value
 
@@ -100,6 +100,7 @@ class SDBConverter:
             return self.decode(prop.data_type, value)
 
     def encode_int(self, value):
+        value = int(value)
         value += 2147483648
         return '%010d' % value
 
@@ -109,6 +110,7 @@ class SDBConverter:
         return int(value)
 
     def encode_long(self, value):
+        value = long(value)
         value += 9223372036854775808
         return '%020d' % value
 
@@ -200,23 +202,28 @@ class SDBManager(object):
         if not cls:
             cls = find_class(a['__module__'], a['__type__'])
         obj = cls(id)
-        obj.auto_update = False
+        obj._auto_update = False
         for prop in obj.properties(hidden=False):
             if prop.data_type != Key:
                 if a.has_key(prop.name):
                     value = self.decode_value(prop, a[prop.name])
                     value = prop.make_value_from_datastore(value)
                     setattr(obj, prop.name, value)
-        obj.auto_update = True
+        obj._auto_update = True
         return obj
         
     def get_object_from_id(self, id):
         return self.get_object(None, id)
 
     def query(self, cls, filters, limit=None, order_by=None):
+        import types
         if len(filters) > 4:
             raise SDBPersistenceError('Too many filters, max is 4')
-        parts = ["['__lineage__'starts-with'%s']" % (cls.get_lineage())]
+        s = "['__type__'='%s'" % cls.__name__
+        for subclass in cls.__sub_classes__:
+            s += " OR '__type__'='%s'" % subclass.__name__
+        s += "]"
+        parts = [s]
         properties = cls.properties(hidden=False)
         for filter, value in filters:
             name, op = filter.strip().split()
@@ -224,10 +231,17 @@ class SDBManager(object):
             for property in properties:
                 if property.name == name:
                     found = True
-                    value = self.encode_value(property, value)
-                    parts.append("['%s' %s '%s']" % (name, op, value))
+                    if types.TypeType(value) == types.ListType:
+                        filter_parts = []
+                        for val in value:
+                            val = self.encode_value(property, val)
+                            filter_parts.append("'%s' %s '%s'" % (name, op, val))
+                        parts.append("[%s]" % " OR ".join(filter_parts))
+                    else:
+                        value = self.encode_value(property, value)
+                        parts.append("['%s' %s '%s']" % (name, op, value))
             if not found:
-                raise SDBPersistenceError('%s is not a valid field' % key)
+                raise SDBPersistenceError('%s is not a valid field' % name)
         if order_by:
             if order_by.startswith("-"):
                 key = order_by[1:]
@@ -247,6 +261,7 @@ class SDBManager(object):
         obj._auto_update = False
         if not obj.id:
             obj.id = str(uuid.uuid4())
+
         attrs = {'__type__' : obj.__class__.__name__,
                  '__module__' : obj.__class__.__module__,
                  '__lineage__' : obj.get_lineage()}
@@ -255,6 +270,14 @@ class SDBManager(object):
             if value is not None:
                 value = self.encode_value(property, value)
                 attrs[property.name] = value
+            if property.unique:
+                try:
+                    args = {property.name: value}
+                    obj2 = obj.find(**args).next()
+                    if obj2.id != obj.id:
+                        raise SDBPersistenceError("Error: %s must be unique!" % property.name)
+                except(StopIteration):
+                    pass
         self.domain.put_attributes(obj.id, attrs, replace=True)
         obj._auto_update = True
 
@@ -264,6 +287,14 @@ class SDBManager(object):
     def set_property(self, prop, obj, name, value):
         value = prop.get_value_for_datastore(obj)
         value = self.encode_value(prop, value)
+        if prop.unique:
+            try:
+                args = {prop.name: value}
+                obj2 = obj.find(**args).next()
+                if obj2.id != obj.id:
+                    raise SDBPersistenceError("Error: %s must be unique!" % prop.name)
+            except(StopIteration):
+                pass
         self.domain.put_attributes(obj.id, {name : value}, replace=True)
 
     def get_property(self, prop, obj, name):

@@ -25,7 +25,7 @@ import threading
 import boto
 from boto import handler
 from boto.connection import AWSQueryConnection
-from boto.sdb.domain import Domain
+from boto.sdb.domain import Domain, DomainMetaData
 from boto.sdb.item import Item
 from boto.exception import SDBResponseError
 from boto.resultset import ResultSet
@@ -48,11 +48,11 @@ class ItemThread(threading.Thread):
 class SDBConnection(AWSQueryConnection):
 
     APIVersion = '2007-11-07'
-    SignatureVersion = '1'
+    SignatureVersion = '2'
     ResponseError = SDBResponseError
 
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
-                 is_secure=False, port=None, proxy=None, proxy_port=None,
+                 is_secure=True, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None, host='sdb.amazonaws.com', debug=0,
                  https_connection_factory=None):
         AWSQueryConnection.__init__(self, aws_access_key_id, aws_secret_access_key,
@@ -171,6 +171,22 @@ class SDBConnection(AWSQueryConnection):
         params = {'DomainName':domain_name}
         return self.get_status('DeleteDomain', params)
         
+    def domain_metadata(self, domain_or_name):
+        """
+        Get the Metadata for a SimpleDB domain.
+
+        @type domain_or_name: string or L{Domain<boto.sdb.domain.Domain>} object.
+        @param domain_or_name: Either the name of a domain or a Domain object
+
+        @rtype: L{DomainMetaData<boto.sdb.domain.DomainMetaData>} object
+        @return: The newly created domain metadata object
+        """
+        domain, domain_name = self.get_domain_and_name(domain_or_name)
+        params = {'DomainName':domain_name}
+        d = self.get_object('DomainMetadata', params, DomainMetaData)
+        d.domain = domain
+        return d
+        
     def put_attributes(self, domain_or_name, item_name, attributes, replace=True):
         """
         Store attributes for a given item in a domain.
@@ -244,12 +260,12 @@ class SDBConnection(AWSQueryConnection):
         @type item_name: string
         @param item_name: The name of the item whose attributes are being deleted.
 
-        @type attributes: dict or dict-like object
-        @param attributes: either a list containing attribute names which will cause
+        @type attributes: dict, list or L{Item<boto.sdb.item.Item>}
+        @param attributes: Either a list containing attribute names which will cause
                            all values associated with that attribute name to be deleted or
-                           a dict containing the attribute names and keys and list of values
-                           to delete as the value.  If not value is supplied, all attribute
-                           name/values for the item will be deleted.
+                           a dict or Item containing the attribute names and keys and list
+                           of values to delete as the value.  If no value is supplied,
+                           all attribute name/values for the item will be deleted.
                            
         @rtype: bool
         @return: True if successful
@@ -259,8 +275,8 @@ class SDBConnection(AWSQueryConnection):
                   'ItemName' : item_name}
         if attr_names:
             if isinstance(attr_names, list):
-                self.build_list_params(params, attr_names, 'AttributeName')
-            elif isinstance(attr_names, dict):
+                self.build_name_list(params, attr_names)
+            elif isinstance(attr_names, dict) or isinstance(attr_names, Item):
                 self.build_name_value_list(params, attr_names)
         return self.get_status('DeleteAttributes', params)
         
@@ -324,7 +340,7 @@ class SDBConnection(AWSQueryConnection):
             params['NextToken'] = next_token
         if attr_names:
             self.build_list_params(params, attr_names, 'AttributeName')
-        return self.get_list('QueryWithAttributes', params, [('Item', Item)])
+        return self.get_list('QueryWithAttributes', params, [('Item', Item)], parent=domain)
 
     def threaded_query(self, domain_or_name, query='', max_items=None, next_token=None, num_threads=6):
         """

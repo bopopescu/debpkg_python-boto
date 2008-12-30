@@ -39,7 +39,6 @@ Some handy utility functions used by several classes.
 import base64
 import hmac
 import re
-import sha
 import urllib, urllib2
 import imp
 import popen2, os, StringIO
@@ -47,6 +46,7 @@ import time, datetime
 import logging.handlers
 import boto
 import tempfile
+import smtplib
 try:
     import hashlib
     _hashfn = hashlib.sha512
@@ -108,7 +108,10 @@ def canonical_string(method, path, headers, expires=None):
 def merge_meta(headers, metadata):
     final_headers = headers.copy()
     for k in metadata.keys():
-        final_headers[METADATA_PREFIX + k] = metadata[k]
+        if k.lower() in ['content-md5', 'content-type', 'date']:
+            final_headers[k] = metadata[k]
+        else:
+            final_headers[METADATA_PREFIX + k] = metadata[k]
 
     return final_headers
 
@@ -174,12 +177,15 @@ def find_class(module_name, class_name=None):
     path = None
     c = None
 
-    for m in modules[1:]:
-        if c:
-            c = getattr(c, m)
-        else:
-            c = getattr(__import__(".".join(modules[0:-1])), m)
-    return c
+    try:
+        for m in modules[1:]:
+            if c:
+                c = getattr(c, m)
+            else:
+                c = getattr(__import__(".".join(modules[0:-1])), m)
+        return c
+    except:
+        return None
     
 def update_dme(username, password, dme_id, ip_address):
     """
@@ -434,7 +440,7 @@ class LRUCache(dict):
         item.next = self.head
         self.head.previous = self.head = item
 
-class Password:
+class Password(object):
     """
     Password object that stores itself as SHA512 hashed.
     """
@@ -455,3 +461,25 @@ class Password:
 
     def __len__(self):
         return len(self.str)
+
+def notify(subject, body=''):
+    subject = "[%s] %s" % (boto.config.get_value("Instance", "instance-id"), subject)
+    to_string = boto.config.get_value('Notification', 'smtp_to', None)
+    if to_string:
+        try:
+            from_string = boto.config.get_value('Notification', 'smtp_from', 'boto')
+            msg = "From: %s\n" % from_string
+            msg += "To: %s\n" % to_string
+            msg += "Subject: %s\n\n" % subject
+            msg += body
+            smtp_host = boto.config.get_value('Notification', 'smtp_host', 'localhost')
+            server = smtplib.SMTP(smtp_host)
+            smtp_user = boto.config.get_value('Notification', 'smtp_user', '')
+            smtp_pass = boto.config.get_value('Notification', 'smtp_pass', '')
+            if smtp_user:
+                server.login(smtp_user, smtp_pass)
+            server.sendmail(from_string, to_string, msg)
+            server.quit()
+        except:
+            boto.log.error('notify failed')
+

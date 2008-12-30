@@ -27,11 +27,15 @@ import boto
 
 class ModelMeta(type):
     "Metaclass for all Models"
+
     def __init__(cls, name, bases, dict):
         super(ModelMeta, cls).__init__(name, bases, dict)
         # Make sure this is a subclass of Model - mainly copied from django ModelBase (thanks!)
+        cls.__sub_classes__ = []
         try:
             if filter(lambda b: issubclass(b, Model), bases):
+                for base in bases:
+                    base.__sub_classes__.append(cls)
                 cls._manager = get_manager(cls)
                 # look for all of the Properties and set their names
                 for key in dict.keys():
@@ -114,6 +118,21 @@ class Model(object):
                 cls = None
         return properties
 
+    @classmethod
+    def find_property(cls, prop_name):
+        property = None
+        while cls:
+            for key in cls.__dict__.keys():
+                prop = cls.__dict__[key]
+                if isinstance(prop, Property):
+                    if prop_name == prop.name:
+                        property = prop
+            if len(cls.__bases__) > 0:
+                cls = cls.__bases__[0]
+            else:
+                cls = None
+        return property
+
     def __init__(self, id=None, **kw):
         if kw.has_key('manager'):
             self._manager = kw['manager']
@@ -125,6 +144,9 @@ class Model(object):
 
     def __str__(self):
         return str(self.id)
+    
+    def __eq__(self, other):
+        return other and isinstance(other, Model) and self.id == other.id
 
     def _get_raw_item(self):
         return self._manager.get_raw_item(self)
