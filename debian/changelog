@@ -1,3 +1,9 @@
+python-boto (1.6b-1) unstable; urgency=low
+
+  * New Upstream Version
+
+ -- Eric Evans <eevans@debian.org>  Tue, 30 Dec 2008 16:13:24 -0600
+
 python-boto (1.4c-1) unstable; urgency=low
 
   * New Upstream Version
