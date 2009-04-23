@@ -73,12 +73,14 @@ class Model(object):
         return manager.get_object(cls, id)
             
     @classmethod
-    def get_by_ids(cls, ids=None, parent=None):
+    def get_by_id(cls, ids=None, parent=None):
         if isinstance(ids, list):
             objs = [cls._get_by_id(id) for id in ids]
             return objs
         else:
             return cls._get_by_id(ids)
+
+    get_by_ids = get_by_id
 
     @classmethod
     def get_by_key_name(cls, key_names, parent=None):
@@ -125,7 +127,7 @@ class Model(object):
             for key in cls.__dict__.keys():
                 prop = cls.__dict__[key]
                 if isinstance(prop, Property):
-                    if prop_name == prop.name:
+                    if not prop.__class__.__name__.startswith('_') and prop_name == prop.name:
                         property = prop
             if len(cls.__bases__) > 0:
                 cls = cls.__bases__[0]
@@ -133,11 +135,30 @@ class Model(object):
                 cls = None
         return property
 
+    @classmethod
+    def get_xmlmanager(cls):
+        if not hasattr(cls, '_xmlmanager'):
+            from boto.sdb.db.manager.xmlmanager import XMLManager
+            cls._xmlmanager = XMLManager(cls, None, None, None,
+                                         None, None, None, None, False)
+        return cls._xmlmanager
+
+    @classmethod
+    def from_xml(cls, fp):
+        xmlmanager = cls.get_xmlmanager()
+        return xmlmanager.unmarshal_object(fp)
+
     def __init__(self, id=None, **kw):
+        self._loaded = False
+        # first initialize all properties to their default values
+        for prop in self.properties(hidden=False):
+            setattr(self, prop.name, prop.default_value())
         if kw.has_key('manager'):
             self._manager = kw['manager']
         self.id = id
-        self._auto_update = False
+        for key in kw:
+            if key != 'manager':
+                setattr(self, key, kw[key])
 
     def __repr__(self):
         return '%s<%s>' % (self.__class__.__name__, self.id)
@@ -151,9 +172,12 @@ class Model(object):
     def _get_raw_item(self):
         return self._manager.get_raw_item(self)
 
+    def load(self):
+        if not self._loaded:
+            self._manager.load_object(self)
+
     def put(self):
         self._manager.save_object(self)
-        self._auto_update = True
 
     save = put
         
@@ -173,6 +197,11 @@ class Model(object):
         obj = {'properties' : props,
                'id' : self.id}
         return {self.__class__.__name__ : obj}
+
+    def to_xml(self, doc=None):
+        xmlmanager = self.get_xmlmanager()
+        doc = xmlmanager.marshal_object(self, doc)
+        return doc
 
 class Expando(Model):
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2006-2008 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006,2007 Mitch Garnaat http://garnaat.org/
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -19,28 +19,22 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 #
-"""
-This module provides an interface to the Elastic Compute Cloud (EC2)
-service from AWS.
-"""
-from boto.ec2.connection import EC2Connection
 
-def regions(**kw_params):
-    """
-    Get all available regions for the EC2 service.
-    You may pass any of the arguments accepted by the EC2Connection
-    object's constructor as keyword arguments and they will be
-    passed along to the EC2Connection object.
+from boto.ec2.regioninfo import RegionInfo
+
+class SQSRegionInfo(RegionInfo):
+
+    def connect(self, **kw_params):
+        """
+        Connect to this Region's endpoint. Returns an SQSConnection
+        object pointing to the endpoint associated with this region.
+        You may pass any of the arguments accepted by the SQSConnection
+        object's constructor as keyword arguments and they will be
+        passed along to the SQSConnection object.
         
-    @rtype: list
-    @return: A list of L{RegionInfo<boto.ec2.regioninfo.RegionInfo>}
-    """
-    c = EC2Connection(**kw_params)
-    return c.get_all_regions()
+        @rtype: L{SQSConnection<boto.sqs.connection.SQSConnection}
+        @return: The connection to this regions endpoint
+        """
+        from boto.sqs.connection import SQSConnection
+        return SQSConnection(region=self, **kw_params)
 
-def connect_to_region(region_name):
-    for region in regions():
-        if region.name == region_name:
-            return region.connect()
-    return None
-    

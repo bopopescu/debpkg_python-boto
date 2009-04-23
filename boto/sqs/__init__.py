@@ -24,8 +24,22 @@ import boto
 
 boto.check_extensions(__name__, __path__)
 
-__all__ = ['Connection', 'Queue', 'Message', 'MHMessage']
-
-from connection import SQSConnection as Connection
 from queue import Queue
 from message import Message, MHMessage
+from regioninfo import SQSRegionInfo
+
+def regions():
+    """
+    Get all available regions for the SQS service.
+        
+    @rtype: list
+    @return: A list of L{RegionInfo<boto.ec2.regioninfo.RegionInfo>}
+    """
+    return [SQSRegionInfo(name='us-east-1', endpoint='queue.amazonaws.com'),
+            SQSRegionInfo(name='eu-west-1', endpoint='eu-west-1.queue.amazonaws.com')]
+
+def connect_to_region(region_name):
+    for region in regions():
+        if region.name == region_name:
+            return region.connect()
+    return None

@@ -59,6 +59,9 @@ class BotoServerError(Exception):
         self.reason = reason
         self.body = body or ''
         self.request_id = None
+        self.error_code = None
+        self.error_message = None
+        self.box_usage = None
 
         # Attempt to parse the error response. If body isn't present,
         # then just ignore the error response.
@@ -72,6 +75,13 @@ class BotoServerError(Exception):
                 # don't get partial garbage.
                 print "Warning: failed to parse error message from AWS: %s" % pe
                 self._cleanupParsedProperties()
+
+    def __getattr__(self, name):
+        if name == 'message':
+            return self.error_message
+        if name == 'code':
+            return self.error_code
+        raise AttributeError
 
     def __repr__(self):
         return '%s: %s %s\n%s' % (self.__class__.__name__,
@@ -87,11 +97,19 @@ class BotoServerError(Exception):
     def endElement(self, name, value, connection):
         if name in ('RequestId', 'RequestID'):
             self.request_id = value
+        elif name == 'Code':
+            self.error_code = value
+        elif name == 'Message':
+            self.error_message = value
+        elif name == 'BoxUsage':
+            self.box_usage = value
         return None
 
     def _cleanupParsedProperties(self):
         self.request_id = None
-
+        self.error_code = None
+        self.error_message = None
+        self.box_usage = None
 
 class ConsoleOutput:
 
@@ -116,7 +134,15 @@ class S3CreateError(BotoServerError):
     """
     Error creating a bucket or key on S3.
     """
-    pass
+    def __init__(self, status, reason, body=None):
+        self.bucket = None
+        BotoServerError.__init__(self, status, reason, body)
+
+    def endElement(self, name, value, connection):
+        if name == 'BucketName':
+            self.bucket = value
+        else:
+            return BotoServerError.endElement(self, name, value, connection)
 
 class S3CopyError(BotoServerError):
     """
@@ -131,8 +157,6 @@ class SQSError(BotoServerError):
     def __init__(self, status, reason, body=None):
         self.detail = None
         self.type = None
-        self.code = None
-        self.message = None
         BotoServerError.__init__(self, status, reason, body)
 
     def startElement(self, name, attrs, connection):
@@ -143,16 +167,12 @@ class SQSError(BotoServerError):
             self.detail = value
         elif name == 'Type':
             self.type = value
-        elif name == 'Code':
-            self.code = value
-        elif name == 'Message':
-            self.message = value
         else:
             return BotoServerError.endElement(self, name, value, connection)
 
     def _cleanupParsedProperties(self):
         BotoServerError._cleanupParsedProperties(self)
-        for p in ('detail', 'type', 'code', 'message'):
+        for p in ('detail', 'type'):
             setattr(self, p, None)
 
 class S3ResponseError(BotoServerError):
@@ -161,8 +181,6 @@ class S3ResponseError(BotoServerError):
     """
     def __init__(self, status, reason, body=None):
         self.resource = None
-        self.code = None
-        self.message = None
         BotoServerError.__init__(self, status, reason, body)
 
     def startElement(self, name, attrs, connection):
@@ -171,16 +189,12 @@ class S3ResponseError(BotoServerError):
     def endElement(self, name, value, connection):
         if name == 'Resource':
             self.resource = value
-        elif name == 'Code':
-            self.code = value
-        elif name == 'Message':
-            self.message = value
         else:
             return BotoServerError.endElement(self, name, value, connection)
 
     def _cleanupParsedProperties(self):
         BotoServerError._cleanupParsedProperties(self)
-        for p in ('resource', 'code', 'message'):
+        for p in ('resource'):
             setattr(self, p, None)
 
 class EC2ResponseError(BotoServerError):
@@ -189,15 +203,13 @@ class EC2ResponseError(BotoServerError):
     """
 
     def __init__(self, status, reason, body=None):
-        self.code = None
-        self.message = None
         self.errors = None
         self._errorResultSet = []
         BotoServerError.__init__(self, status, reason, body)
-        self.errors = [ (e.code, e.message) \
+        self.errors = [ (e.error_code, e.error_message) \
                 for e in self._errorResultSet ]
         if len(self.errors):
-            self.code, self.message = self.errors[0]
+            self.error_code, self.error_message = self.errors[0]
 
     def startElement(self, name, attrs, connection):
         if name == 'Errors':
@@ -215,24 +227,24 @@ class EC2ResponseError(BotoServerError):
     def _cleanupParsedProperties(self):
         BotoServerError._cleanupParsedProperties(self)
         self._errorResultSet = []
-        for p in ('errors', 'code', 'message'):
+        for p in ('errors'):
             setattr(self, p, None)
 
 class _EC2Error:
 
     def __init__(self, connection=None):
         self.connection = connection
-        self.code = None
-        self.message = None
+        self.error_code = None
+        self.error_message = None
 
     def startElement(self, name, attrs, connection):
         return None
 
     def endElement(self, name, value, connection):
         if name == 'Code':
-            self.code = value
+            self.error_code = value
         elif name == 'Message':
-            self.message = value
+            self.error_message = value
         else:
             return None
 

@@ -106,7 +106,10 @@ class Server(Model):
     def getInstance(self):
         if not self._instance:
             if self.instance_id:
-                rs = self.ec2.get_all_instances([self.instance_id])
+                try:
+                    rs = self.ec2.get_all_instances([self.instance_id])
+                except:
+                    return None
                 if len(rs) > 0:
                     self._reservation = rs[0]
                     self._instance = self._reservation.instances[0]
@@ -344,7 +347,7 @@ class Server(Model):
         self.image_id = self.ec2.register_image('%s/%s.manifest.xml' % (bucket, prefix))
         return self.image_id
 
-    def attatch_volume(self, volume, device="/dev/sdp"):
+    def attach_volume(self, volume, device="/dev/sdp"):
         """
         Attach an EBS volume to this server
 

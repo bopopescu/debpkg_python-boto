@@ -22,7 +22,7 @@
 """
 Represents an SDB Domain
 """
-from boto.sdb.queryresultset import QueryResultSet
+from boto.sdb.queryresultset import QueryResultSet, SelectResultSet
 from boto.sdb.item import Item
 
 class Domain:
@@ -85,6 +85,22 @@ class Domain:
         """
         return iter(QueryResultSet(self, query, max_items, attr_names))
     
+    def select(self, query='', next_token=None):
+        """
+        Returns a set of Attributes for item names within domain_name that match the query.
+        The query must be expressed in using the SELECT style syntax rather than the
+        original SimpleDB query language.
+
+        @type query: string
+        @param query: The SimpleDB query to be performed.
+
+        @rtype: iter
+        @return: An iterator containing the results.  This is actually a generator
+                 function that will iterate across all search results, not just the
+                 first page.
+        """
+        return iter(SelectResultSet(self, query))
+    
     def get_item(self, item_name):
         item = self.get_attributes(item_name)
         if item:
@@ -98,6 +114,43 @@ class Domain:
 
     def delete_item(self, item):
         self.delete_attributes(item.name)
+
+    def to_xml(self):
+        """
+        Get this domain as an XML DOM Document
+        """
+        from xml.dom.minidom import getDOMImplementation
+        impl = getDOMImplementation()
+        doc = impl.createDocument(None, 'Domain', None)
+        doc.documentElement.setAttribute("id", self.name)
+        for item in self:
+            obj_node = doc.createElement('Item')
+            obj_node.setAttribute("id", item.name)
+            for k in item:
+                attr_node = doc.createElement("attribute")
+                attr_node.setAttribute("id", k)
+                values = item[k]
+                if not isinstance(values, list):
+                    values = [item[k]]
+
+                for value in values:
+                    value_node = doc.createElement("value")
+                    value_node.appendChild(doc.createTextNode(str(value)))
+                    attr_node.appendChild(value_node)
+
+                obj_node.appendChild(attr_node)
+            doc.documentElement.appendChild(obj_node)
+        return doc
+
+    def from_xml(self, doc):
+        """
+        Load this domain based on an XML document
+        """
+        import xml.sax
+        handler = DomainDumpParser(self)
+        xml.sax.parse(doc, handler)
+        return handler
+
 
 class DomainMetaData:
     
@@ -130,4 +183,33 @@ class DomainMetaData:
             self.timestamp = value
         else:
             setattr(self, name, value)
+
+from xml.sax.handler import ContentHandler
+class DomainDumpParser(ContentHandler):
+    """
+    SAX parser for a domain that has been dumped
+    """
+    
+    def __init__(self, domain):
+        self.items = []
+        self.item = None
+        self.attribute = None
+        self.value = None
+        self.domain = domain
+
+    def startElement(self, name, attrs):
+        if name == "Item":
+            self.item = self.domain.new_item(attrs['id'])
+        elif name == "attribute":
+            self.attribute = attrs['id']
+        elif name == "value":
+            self.value = ""
+
+    def characters(self, ch):
+        self.value += ch
+
+    def endElement(self, name):
+        if name == "value":
+            if self.value and self.attribute:
+                self.item.add_value(self.attribute, self.value)
 

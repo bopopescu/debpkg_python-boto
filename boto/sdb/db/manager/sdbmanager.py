@@ -19,12 +19,15 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 import boto
+import re
 from boto.utils import find_class
 import uuid
 from boto.sdb.db.key import Key
 from boto.sdb.db.model import Model
+from boto.sdb.db.blob import Blob
 from datetime import datetime
 from boto.exception import SDBPersistenceError
+from tempfile import TemporaryFile
 
 ISO8601 = '%Y-%m-%dT%H:%M:%SZ'
 
@@ -47,7 +50,9 @@ class SDBConverter:
                           long : (self.encode_long, self.decode_long),
                           Model : (self.encode_reference, self.decode_reference),
                           Key : (self.encode_reference, self.decode_reference),
-                          datetime : (self.encode_datetime, self.decode_datetime)}
+                          datetime : (self.encode_datetime, self.decode_datetime),
+                          Blob: (self.encode_blob, self.decode_blob),
+                      }
 
     def encode(self, item_type, value):
         if item_type in self.type_map:
@@ -83,19 +88,17 @@ class SDBConverter:
             if hasattr(prop, 'item_type'):
                 item_type = getattr(prop, "item_type")
                 if Model in item_type.mro():
-                    if item_type != self.manager.cls:
-                        return item_type._manager.decode_value(prop, value)
-                    else:
-                        item_type = Model
+                    return [item_type(id=v) for v in value]
                 return [self.decode(item_type, v) for v in value]
             else:
                 return value
         elif hasattr(prop, 'reference_class'):
-            ref_class = getattr(prop, 'reference_class')
-            if ref_class != self.manager.cls:
-                return ref_class._manager.decode_value(prop, value)
-            else:
-                return self.decode(prop.data_type, value)
+            # This may not look right but it is 8^)
+            # We don't want to create the object in a reference property
+            # until it is actually referenced.  This cuts down greatly
+            # on the calls to SimpleDB.  There is code in the ReferenceProperty
+            # to create the object upon first reference.
+            return prop.reference_class(id=value)
         else:
             return self.decode(prop.data_type, value)
 
@@ -156,10 +159,46 @@ class SDBConverter:
         except:
             return None
 
+    def encode_blob(self, value):
+        if not value:
+            return None
+
+        if not value.id:
+            bucket = self.manager.get_blob_bucket()
+            key = bucket.new_key(str(uuid.uuid4()))
+            value.id = "s3://%s/%s" % (key.bucket.name, key.name)
+        else:
+            match = re.match("^s3:\/\/([^\/]*)\/(.*)$", value.id)
+            if match:
+                s3 = self.manager.get_s3_connection()
+                bucket = s3.get_bucket(match.group(1), validate=False)
+                key = bucket.get_key(match.group(2))
+            else:
+                raise SDBPersistenceError("Invalid Blob ID: %s" % value.id)
+
+        key.set_contents_from_string(value.value)
+        return value.id
+
+
+    def decode_blob(self, value):
+        if not value:
+            return None
+        match = re.match("^s3:\/\/([^\/]*)\/(.*)$", value)
+        if match:
+            s3 = self.manager.get_s3_connection()
+            bucket = s3.get_bucket(match.group(1), validate=False)
+            key = bucket.get_key(match.group(2))
+        else:
+            return None
+        if key:
+            return Blob(file=key, id="s3://%s/%s" % (key.bucket.name, key.name))
+        else:
+            return None
+
 class SDBManager(object):
     
     def __init__(self, cls, db_name, db_user, db_passwd,
-                 db_host, db_port, db_table, ddl_dir):
+                 db_host, db_port, db_table, ddl_dir, enable_ssl):
         self.cls = cls
         self.db_name = db_name
         self.db_user = db_user
@@ -168,20 +207,32 @@ class SDBManager(object):
         self.db_port = db_port
         self.db_table = db_table
         self.ddl_dir = ddl_dir
+        self.enable_ssl = enable_ssl
         self.s3 = None
+        self.bucket = None
         self.converter = SDBConverter(self)
         self._connect()
 
     def _connect(self):
         self.sdb = boto.connect_sdb(aws_access_key_id=self.db_user,
-                                    aws_secret_access_key=self.db_passwd)
-        self.domain = self.sdb.lookup(self.db_name)
+                                    aws_secret_access_key=self.db_passwd,
+                                    port=self.db_port,
+                                    host=self.db_host,
+                                    is_secure=self.enable_ssl
+                                    )
+        # This assumes that the domain has already been created
+        # It's much more efficient to do it this way rather than
+        # having this make a roundtrip each time to validate.
+        # The downside is that if the domain doesn't exist, it breaks
+        self.domain = self.sdb.lookup(self.db_name, validate=False)
         if not self.domain:
             self.domain = self.sdb.create_domain(self.db_name)
 
     def _object_lister(self, cls, query_lister):
         for item in query_lister:
-            yield self.get_object(None, item.name, item)
+            obj = self.get_object(cls, item.name, item)
+            if obj:
+                yield obj
             
     def encode_value(self, prop, value):
         return self.converter.encode_prop(prop, value)
@@ -191,74 +242,120 @@ class SDBManager(object):
 
     def get_s3_connection(self):
         if not self.s3:
-            self.s3 = boto.connect_s3(self.aws_access_key_id, self.aws_secret_access_key)
+            self.s3 = boto.connect_s3(self.db_user, self.db_passwd)
         return self.s3
 
+    def get_blob_bucket(self, bucket_name=None):
+        s3 = self.get_s3_connection()
+        bucket_name = "%s-%s" % (s3.aws_access_key_id, self.domain.name)
+        bucket_name = bucket_name.lower()
+        try:
+            self.bucket = s3.get_bucket(bucket_name)
+        except:
+            self.bucket = s3.create_bucket(bucket_name)
+        return self.bucket
+            
+    def load_object(self, obj):
+        if not obj._loaded:
+            a = self.domain.get_attributes(obj.id)
+            if a.has_key('__type__'):
+                for prop in obj.properties(hidden=False):
+                    if a.has_key(prop.name):
+                        value = self.decode_value(prop, a[prop.name])
+                        value = prop.make_value_from_datastore(value)
+                        setattr(obj, prop.name, value)
+            obj._loaded = True
+        
     def get_object(self, cls, id, a=None):
+        obj = None
         if not a:
             a = self.domain.get_attributes(id)
-        if not a.has_key('__type__'):
-            raise SDBPersistenceError('object %s does not exist' % id)
-        if not cls:
-            cls = find_class(a['__module__'], a['__type__'])
-        obj = cls(id)
-        obj._auto_update = False
-        for prop in obj.properties(hidden=False):
-            if prop.data_type != Key:
-                if a.has_key(prop.name):
-                    value = self.decode_value(prop, a[prop.name])
-                    value = prop.make_value_from_datastore(value)
-                    setattr(obj, prop.name, value)
-        obj._auto_update = True
+        if a.has_key('__type__'):
+            if not cls or a['__type__'] != cls.__name__:
+                cls = find_class(a['__module__'], a['__type__'])
+            if cls:
+                params = {}
+                for prop in cls.properties(hidden=False):
+                    if a.has_key(prop.name):
+                        value = self.decode_value(prop, a[prop.name])
+                        value = prop.make_value_from_datastore(value)
+                        params[prop.name] = value
+                obj = cls(id, **params)
+                obj._loaded = True
+            else:
+                s = '(%s) class %s.%s not found' % (id, a['__module__'], a['__type__'])
+                boto.log.info('sdbmanager: %s' % s)
         return obj
         
     def get_object_from_id(self, id):
         return self.get_object(None, id)
 
     def query(self, cls, filters, limit=None, order_by=None):
-        import types
-        if len(filters) > 4:
-            raise SDBPersistenceError('Too many filters, max is 4')
-        s = "['__type__'='%s'" % cls.__name__
-        for subclass in cls.__sub_classes__:
-            s += " OR '__type__'='%s'" % subclass.__name__
-        s += "]"
-        parts = [s]
-        properties = cls.properties(hidden=False)
-        for filter, value in filters:
-            name, op = filter.strip().split()
-            found = False
-            for property in properties:
-                if property.name == name:
-                    found = True
-                    if types.TypeType(value) == types.ListType:
-                        filter_parts = []
-                        for val in value:
-                            val = self.encode_value(property, val)
-                            filter_parts.append("'%s' %s '%s'" % (name, op, val))
-                        parts.append("[%s]" % " OR ".join(filter_parts))
-                    else:
-                        value = self.encode_value(property, value)
-                        parts.append("['%s' %s '%s']" % (name, op, value))
-            if not found:
-                raise SDBPersistenceError('%s is not a valid field' % name)
-        if order_by:
-            if order_by.startswith("-"):
-                key = order_by[1:]
-                type = "desc"
-            else:
-                key = order_by
-                type = "asc"
-            parts.append("['%s' starts-with ''] sort '%s' %s" % (key, key, type))
-        query = ' intersection '.join(parts)
-        rs = self.domain.query(query, max_items=limit)
+        query = "select * from `%s` %s" % (self.domain.name, self._build_filter_part(cls, filters, order_by))
+        rs = self.domain.select(query)
         return self._object_lister(cls, rs)
+
+    def count(self, cls, filters):
+        """
+        Get the number of results that would
+        be returned in this query
+        """
+        query = "select count(*) from `%s` %s" % (self.domain.name, self._build_filter_part(cls, filters))
+        count =  int(self.domain.select(query).next()["Count"])
+        return count
+
+    def _build_filter_part(self, cls, filters, order_by=None):
+        """
+        Build the filter part
+        """
+        import types
+        query_parts = []
+        order_by_filtered = False
+        if order_by:
+            if order_by[0] == "-":
+                order_by_method = "desc";
+                order_by = order_by[1:]
+            else:
+                order_by_method = "asc";
+
+        for filter in filters:
+            (name, op) = filter[0].strip().split(" ")
+            value = filter[1]
+            property = cls.find_property(name)
+            if name == order_by:
+                order_by_filtered = True
+            if types.TypeType(value) == types.ListType:
+                filter_parts = []
+                for val in value:
+                    val = self.encode_value(property, val)
+                    filter_parts.append("`%s` %s '%s'" % (name, op, val.replace("'", "''")))
+                query_parts.append("(%s)" % (" or ".join(filter_parts)))
+            else:
+                val = self.encode_value(property, value)
+                query_parts.append("`%s` %s '%s'" % (name, op, val.replace("'", "''")))
+
+        type_query = "(`__type__` = '%s'" % cls.__name__
+        for subclass in cls.__sub_classes__:
+            type_query += " or `__type__` = '%s'" % subclass.__name__
+        type_query +=")"
+        query_parts.append(type_query)
+
+        order_by_query = ""
+        if order_by:
+            if not order_by_filtered:
+                query_parts.append("`%s` like '%%'" % order_by)
+            order_by_query = " order by `%s` %s" % (order_by, order_by_method)
+
+        if len(query_parts) > 0:
+            return "where %s %s" % (" and ".join(query_parts), order_by_query)
+        else:
+            return ""
+
 
     def query_gql(self, query_string, *args, **kwds):
         raise NotImplementedError, "GQL queries not supported in SimpleDB"
 
     def save_object(self, obj):
-        obj._auto_update = False
         if not obj.id:
             obj.id = str(uuid.uuid4())
 
@@ -279,7 +376,6 @@ class SDBManager(object):
                 except(StopIteration):
                     pass
         self.domain.put_attributes(obj.id, attrs, replace=True)
-        obj._auto_update = True
 
     def delete_object(self, obj):
         self.domain.delete_attributes(obj.id)
@@ -298,11 +394,14 @@ class SDBManager(object):
         self.domain.put_attributes(obj.id, {name : value}, replace=True)
 
     def get_property(self, prop, obj, name):
-        a = self.domain.get_attributes(obj.id, name)
+        a = self.domain.get_attributes(obj.id)
+
         # try to get the attribute value from SDB
         if name in a:
             value = self.decode_value(prop, a[name])
-            return prop.make_value_from_datastore(value)
+            value = prop.make_value_from_datastore(value)
+            setattr(obj, prop.name, value)
+            return value
         raise AttributeError, '%s not found' % name
 
     def set_key_value(self, obj, name, value):

@@ -59,15 +59,15 @@ def test_basic():
     t.size = -42
     t.foo = True
     t.date = datetime.now()
+    print 'saving object'
     t.put()
     _objects['test_basic_t'] = t
-    print 'saving object'
     time.sleep(5)
     print 'now try retrieving it'
-    tt = TestBasic.get_by_ids(t.id)
+    tt = TestBasic.get_by_id(t.id)
     _objects['test_basic_tt'] = tt
     assert tt.id == t.id
-    l = TestBasic.get_by_ids([t.id])
+    l = TestBasic.get_by_id([t.id])
     assert len(l) == 1
     assert l[0].id == t.id
     assert t.size == tt.size
@@ -91,7 +91,7 @@ def test_reference(t=None):
     tt.ref = t
     tt.put()
     time.sleep(10)
-    tt = TestReference.get_by_ids(tt.id)
+    tt = TestReference.get_by_id(tt.id)
     _objects['test_reference_tt'] = tt
     assert tt.ref.id == t.id
     for o in t.refs:
@@ -113,7 +113,7 @@ def test_password():
     t.save()
     time.sleep(5)
     # Make sure it stored ok
-    tt = TestPassword.get_by_ids(t.id)
+    tt = TestPassword.get_by_id(t.id)
     _objects['test_password_tt'] = tt
     #Testing password equality
     assert tt.password == "foo"
@@ -127,7 +127,7 @@ def test_list():
     t.name = 'a list of ints'
     t.nums = [1,2,3,4,5]
     t.put()
-    tt = TestList.get_by_ids(t.id)
+    tt = TestList.get_by_id(t.id)
     _objects['test_list_tt'] = tt
     assert tt.name == t.name
     for n in tt.nums:
@@ -144,7 +144,7 @@ def test_list_reference():
     tt.put()
     time.sleep(5)
     _objects['test_list_ref_tt'] = tt
-    ttt = TestListReference.get_by_ids(tt.id)
+    ttt = TestListReference.get_by_id(tt.id)
     assert ttt.basics[0].id == t.id
 
 def test_unique():
@@ -161,6 +161,20 @@ def test_unique():
         assert False
     except(SDBPersistenceError):
         pass
+    finally:
+        t.delete()
+
+def test_datetime():
+    global _objects
+    t = TestAutoNow()
+    t.put()
+    _objects['test_datetime_t'] = t
+    time.sleep(5)
+    tt = TestAutoNow.get_by_id(t.id)
+    try:
+        assert tt.create_date.timetuple() == t.create_date.timetuple()
+    finally:
+        t.delete()
 
 
 def test():
@@ -178,3 +192,8 @@ def test():
     test_list()
     print 'test_list_reference'
     test_list_reference()
+    print "test_datetime"
+    test_datetime()
+
+if __name__ == "__main__":
+    test()

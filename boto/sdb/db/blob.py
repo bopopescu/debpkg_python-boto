@@ -1,4 +1,4 @@
-# Copyright (c) 2006-2008 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006,2007,2008 Mitch Garnaat http://garnaat.org/
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -18,29 +18,20 @@
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
-#
-"""
-This module provides an interface to the Elastic Compute Cloud (EC2)
-service from AWS.
-"""
-from boto.ec2.connection import EC2Connection
 
-def regions(**kw_params):
+class Blob(object):
     """
-    Get all available regions for the EC2 service.
-    You may pass any of the arguments accepted by the EC2Connection
-    object's constructor as keyword arguments and they will be
-    passed along to the EC2Connection object.
-        
-    @rtype: list
-    @return: A list of L{RegionInfo<boto.ec2.regioninfo.RegionInfo>}
+    Blob object
     """
-    c = EC2Connection(**kw_params)
-    return c.get_all_regions()
+    def __init__(self, value=None, file=None, id=None):
+        self.file = file
+        self.id = id
+        self.value = value
 
-def connect_to_region(region_name):
-    for region in regions():
-        if region.name == region_name:
-            return region.connect()
-    return None
-    
+    def __str__(self):
+        return str(self.read())
+
+    def read(self):
+        if not self.value:
+            self.value = self.file.read()
+        return self.value

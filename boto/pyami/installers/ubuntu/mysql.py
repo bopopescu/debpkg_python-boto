@@ -1,4 +1,4 @@
-# Copyright (c) 2006,2007,2008 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006-2009 Mitch Garnaat http://garnaat.org/
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -19,12 +19,25 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 #
+"""
+This installer will install mysql-server on an Ubuntu machine.
+In addition to the normal installation done by apt-get, it will
+also configure the new MySQL server to store it's data files in
+a different location.  By default, this is /mnt but that can be
+configured in the [MySQL] section of the boto config file passed
+to the instance.
+"""
 from boto.pyami.installers.ubuntu.installer import Installer
 import os
 import boto
 from ConfigParser import SafeConfigParser
-import subprocess
 import time
+
+ConfigSection = """
+[MySQL]
+root_password = <will be used as MySQL root password, default none>
+data_dir = <new data dir for MySQL, default is /mnt>
+"""
 
 class MySQL(Installer):
 
@@ -32,35 +45,40 @@ class MySQL(Installer):
         self.run('apt-get update')
         self.run('apt-get -y install mysql-server', notify=True, exit_on_error=True)
 
-    def set_root_password(self, password=None):
-        if not password:
-            password = boto.config.get('Pyami', 'mysql_root_password')
-        if password:
-            self.run('mysqladmin -u root password %s' % password)
+#    def set_root_password(self, password=None):
+#        if not password:
+#            password = boto.config.get('MySQL', 'root_password')
+#        if password:
+#            self.run('mysqladmin -u root password %s' % password)
+#        return password
 
-    def change_data_dir(self):
+    def change_data_dir(self, password=None):
+        data_dir = boto.config.get('MySQL', 'data_dir', '/mnt')
         fresh_install = False;
         time.sleep(10) #trying to stop mysql immediately after installing it fails
         # We need to wait until mysql creates the root account before we kill it
         # or bad things will happen
-        while self.run("echo 'quit' | mysql -u root") != 0:
+        i = 0
+        while self.run("echo 'quit' | mysql -u root") != 0 and i<5:
             time.sleep(5)
+            i = i + 1
         self.run('/etc/init.d/mysql stop')
         self.run("pkill -9 mysql")
 
-        if not os.path.exists('/mnt/mysql'):
-            self.run('mkdir /mnt/mysql')
+        mysql_path = os.path.join(data_dir, 'mysql')
+        if not os.path.exists(mysql_path):
+            self.run('mkdir %s' % mysql_path)
             fresh_install = True;
-        self.run('chown -R mysql:mysql /mnt/mysql')
+        self.run('chown -R mysql:mysql %s' % mysql_path)
         fp = open('/etc/mysql/conf.d/use_mnt.cnf', 'w')
         fp.write('# created by pyami\n')
-        fp.write('# use the /mnt volume for data\n')
+        fp.write('# use the %s volume for data\n' % data_dir)
         fp.write('[mysqld]\n')
-        fp.write('datadir = /mnt/mysql\n')
-        fp.write('log_bin = /mnt/mysql/mysql-bin.log\n')
+        fp.write('datadir = %s\n' % mysql_path)
+        fp.write('log_bin = %s\n' % os.path.join(mysql_path, 'mysql-bin.log'))
         fp.close()
         if fresh_install:
-            self.run('cp -pr /var/lib/mysql/* /mnt/mysql/')
+            self.run('cp -pr /var/lib/mysql/* %s/' % mysql_path)
             self.start('mysql')
         else:
             #get the password ubuntu expects to use:
@@ -77,6 +95,8 @@ class MySQL(Installer):
 
     def main(self):
         self.install()
-        self.set_root_password()
+        # change_data_dir runs 'mysql -u root' which assumes there is no mysql password, i
+        # and changing that is too ugly to be worth it:
+        #self.set_root_password()
         self.change_data_dir()
         
