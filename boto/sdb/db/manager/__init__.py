@@ -44,11 +44,16 @@ def get_manager(cls):
     db_type = boto.config.get('DB', 'db_type', 'SimpleDB')
     db_name = boto.config.get('DB', 'db_name', None)
     db_table = boto.config.get('DB', 'db_table', None)
-    db_host = boto.config.get('DB', 'db_host', None)
-    db_port = boto.config.getint('DB', 'db_port', 0)
+    db_host = boto.config.get('DB', 'db_host', "sdb.amazonaws.com")
+    db_port = boto.config.getint('DB', 'db_port', 443)
+    enable_ssl = boto.config.getbool('DB', 'enable_ssl', True)
     sql_dir = boto.config.get('DB', 'sql_dir', None)
     debug = boto.config.getint('DB', 'debug', 0)
-    db_section = 'DB_' + cls.__name__
+    # first see if there is a fully qualified section name in the Boto config file
+    module_name = cls.__module__.replace('.', '_')
+    db_section = 'DB_' + module_name + '_' + cls.__name__
+    if not boto.config.has_section(db_section):
+        db_section = 'DB_' + cls.__name__
     if boto.config.has_section(db_section):
         db_user = boto.config.get(db_section, 'db_user', db_user)
         db_passwd = boto.config.get(db_section, 'db_passwd', db_passwd)
@@ -57,18 +62,23 @@ def get_manager(cls):
         db_table = boto.config.get(db_section, 'db_table', db_table)
         db_host = boto.config.get(db_section, 'db_host', db_host)
         db_port = boto.config.getint(db_section, 'db_port', db_port)
+        enable_ssl = boto.config.getint(db_section, 'enable_ssl', enable_ssl)
         debug = boto.config.getint(db_section, 'debug', debug)
     if db_type == 'SimpleDB':
         from sdbmanager import SDBManager
         return SDBManager(cls, db_name, db_user, db_passwd,
-                          db_host, db_port, db_table, sql_dir)
+                          db_host, db_port, db_table, sql_dir, enable_ssl)
     elif db_type == 'PostgreSQL':
         from pgmanager import PGManager
         if db_table:
             return PGManager(cls, db_name, db_user, db_passwd,
-                             db_host, db_port, db_table, sql_dir)
+                             db_host, db_port, db_table, sql_dir, enable_ssl)
         else:
             return None
+    elif db_type == 'XML':
+        from xmlmanager import XMLManager
+        return XMLManager(cls, db_name, db_user, db_passwd,
+                          db_host, db_port, db_table, sql_dir, enable_ssl)
     else:
         raise ValueError, 'Unknown db_type: %s' % db_type
 

@@ -93,13 +93,14 @@ class S3Connection(AWSAuthConnection):
 
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
                  is_secure=True, port=None, proxy=None, proxy_port=None,
+                 proxy_user=None, proxy_pass=None,
                  host=DefaultHost, debug=0, https_connection_factory=None,
                  calling_format=SubdomainCallingFormat()):
         self.calling_format = calling_format
         AWSAuthConnection.__init__(self, host,
                 aws_access_key_id, aws_secret_access_key,
-                is_secure, port, proxy, proxy_port, debug=debug,
-                https_connection_factory=https_connection_factory)
+                is_secure, port, proxy, proxy_port, proxy_user, proxy_pass,
+                debug=debug, https_connection_factory=https_connection_factory)
 
     def __iter__(self):
         return self.get_all_buckets()
@@ -201,12 +202,10 @@ class S3Connection(AWSAuthConnection):
             query_part = ''
         if force_http:
             protocol = 'http'
-            server_name = self.server
         else:
             protocol = self.protocol
-            server_name = self.server_name
-        return self.calling_format.build_url_base(protocol,
-                server_name, bucket, key) + query_part
+        return self.calling_format.build_url_base(protocol, self.server,
+                                                  bucket, key) + query_part
 
     def get_all_buckets(self):
         response = self.make_request('GET')
@@ -297,15 +296,10 @@ class S3Connection(AWSAuthConnection):
             key = key.name
         path = self.calling_format.build_path_base(bucket, key)
         auth_path = self.calling_format.build_auth_path(bucket, key)
-        host = self.calling_format.build_host(self.server, bucket)
+        host = self.calling_format.build_host(self.server_name, bucket)
         if query_args:
             path += '?' + query_args
             auth_path += '?' + query_args
         return AWSAuthConnection.make_request(self, method, path, headers,
                 data, host, auth_path, sender)
 
-#    def checked_request(self, method, bucket='', key='', headers=None, data='',
-#            query_args=None, sender=None, good_status=200):
-#        response = self.make_request(method, bucket, key, headers, data,
-#                query_args, sender)
-#        return check_s3_response(response, good_status)

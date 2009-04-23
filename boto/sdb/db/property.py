@@ -23,15 +23,18 @@ import datetime
 from key import Key
 from boto.utils import Password
 from boto.sdb.db.query import Query
+from tempfile import TemporaryFile
 
 import re
 import boto
 import boto.s3.key
+from boto.sdb.db.blob import Blob
 
 class Property(object):
 
     data_type = str
-    name = None
+    type_name = ''
+    name = ''
 
     def __init__(self, verbose_name=None, name=None, default=None, required=False,
                  validator=None, choices=None, unique=False):
@@ -46,31 +49,14 @@ class Property(object):
         
     def __get__(self, obj, objtype):
         if obj:
-            try:
-                value = getattr(obj, self.slot_name)
-            except AttributeError:
-                value = self.default_value()
-                if obj.id:
-                    try:
-                        value = obj._manager.get_property(self, obj, self.name)
-                    except AttributeError:
-                        pass
-                setattr(obj, self.slot_name, value)
-        return value
+            obj.load()
+            return getattr(obj, self.slot_name)
+        else:
+            return None
 
     def __set__(self, obj, value):
         self.validate(value)
-        try:
-            old_value = getattr(obj, self.slot_name)
-        except:
-            old_value = self.default
         setattr(obj, self.slot_name, value)
-        if obj._auto_update:
-            try:
-                obj._manager.set_property(self, obj, self.name, value)
-            except:
-                setattr(obj, self.slot_name, old_value)
-                raise
 
     def __property_config__(self, model_class, property_name):
         self.model_class = model_class
@@ -106,6 +92,11 @@ class Property(object):
     def make_value_from_datastore(self, value):
         return value
 
+    def get_choices(self):
+        if callable(self.choices):
+            return self.choices()
+        return self.choices
+
 def validate_string(value):
     if isinstance(value, str) or isinstance(value, unicode):
         if len(value) > 1024:
@@ -115,6 +106,8 @@ def validate_string(value):
 
 class StringProperty(Property):
 
+    type_name = 'String'
+    
     def __init__(self, verbose_name=None, name=None, default='', required=False,
                  validator=validate_string, choices=None, unique=False):
         Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
@@ -124,6 +117,8 @@ def validate_text(value):
         raise TypeError, 'Expecting Text, got %s' % type(value)
 
 class TextProperty(Property):
+    
+    type_name = 'Text'
     
     def __init__(self, verbose_name=None, name=None, default='', required=False,
                  validator=validate_text, choices=None, unique=False):
@@ -135,6 +130,7 @@ class PasswordProperty(StringProperty):
     retrieved, but still can be compaired.
     """
     data_type = Password
+    type_name = 'Password'
 
     def __init__(self, verbose_name=None, name=None, default='', required=False,
                  validator=None, choices=None, unique=False):
@@ -146,7 +142,10 @@ class PasswordProperty(StringProperty):
 
     def get_value_for_datastore(self, model_instance):
         value = StringProperty.get_value_for_datastore(self, model_instance)
-        return str(value)
+        if value and len(value):
+            return str(value)
+        else:
+            return None
 
     def __set__(self, obj, value):
         if not isinstance(value, Password):
@@ -166,24 +165,51 @@ class PasswordProperty(StringProperty):
         else:
             raise TypeError, 'Expecting Password, got %s' % type(value)
 
+class BlobProperty(Property):
+    data_type = Blob
+    type_name = "blob"
+
+    def __set__(self, obj, value):
+        if value != self.default_value():
+            if not isinstance(value, Blob):
+                b = Blob(value=value)
+                value = b
+        Property.__set__(self, obj, value)
+
 class S3KeyProperty(Property):
     
     data_type = boto.s3.key.Key
+    type_name = 'S3Key'
+    validate_regex = "^s3:\/\/([^\/]*)\/(.*)$"
 
     def __init__(self, verbose_name=None, name=None, default=None,
                  required=False, validator=None, choices=None, unique=False):
         Property.__init__(self, verbose_name, name, default, required,
                           validator, choices, unique)
-        self.s3 = boto.connect_s3()
-        
-    def make_value_from_datastore(self, value):
-        match = re.match("^s3:\/\/([^\/]*)\/(.*)$", value)
+
+    def validate(self, value):
+        if value == self.default_value() or value == str(self.default_value()):
+            return self.default_value()
+        if isinstance(value, self.data_type):
+            return
+        match = re.match(self.validate_regex, value)
         if match:
-            bucket = self.s3.get_bucket(match.group(1), validate=False)
-            return bucket.get_key(match.group(2))
+            return
+        raise TypeError, 'Validation Error, expecting %s, got %s' % (self.data_type, type(value))
+
+    def __get__(self, obj, objtype):
+        value = Property.__get__(self, obj, objtype)
+        if value:
+            if isinstance(value, self.data_type):
+                return value
+            match = re.match(self.validate_regex, value)
+            if match:
+                s3 = obj._manager.get_s3_connection()
+                bucket = s3.get_bucket(match.group(1), validate=False)
+                return bucket.get_key(match.group(2))
         else:
-            return None
-    
+            return value
+        
     def get_value_for_datastore(self, model_instance):
         value = Property.get_value_for_datastore(self, model_instance)
         if value:
@@ -194,16 +220,14 @@ class S3KeyProperty(Property):
 class IntegerProperty(Property):
 
     data_type = int
+    type_name = 'Integer'
 
     def __init__(self, verbose_name=None, name=None, default=0, required=False,
                  validator=None, choices=None, unique=False):
         Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
 
-    def default_validator(self, value):
-        if not isinstance(value, int):
-            raise TypeError, 'Expecting int, got %s' % type(value)
-                                      
     def validate(self, value):
+        value = int(value)
         value = Property.validate(self, value)
         min = -2147483648
         max = 2147483647
@@ -211,6 +235,7 @@ class IntegerProperty(Property):
             raise ValueError, 'Maximum value is %d' % max
         if value < min:
             raise ValueError, 'Minimum value is %d' % min
+        return value
     
     def empty(self, value):
         return value is None
@@ -218,16 +243,14 @@ class IntegerProperty(Property):
 class LongProperty(Property):
 
     data_type = long
+    type_name = 'Long'
 
     def __init__(self, verbose_name=None, name=None, default=0, required=False,
                  validator=None, choices=None, unique=False):
         Property.__init__(self, verbose_name, name, default, required, validator, choices, unique)
 
-    def default_validator(self, value):
-        if not isinstance(value, long):
-            raise TypeError, 'Expecting long, got %s' % type(value)
-                                      
     def validate(self, value):
+        value = long(value)
         value = Property.validate(self, value)
         min = -9223372036854775808
         max = 9223372036854775807
@@ -235,6 +258,7 @@ class LongProperty(Property):
             raise ValueError, 'Maximum value is %d' % max
         if value < min:
             raise ValueError, 'Minimum value is %d' % min
+        return value
         
     def empty(self, value):
         return value is None
@@ -242,6 +266,7 @@ class LongProperty(Property):
 class BooleanProperty(Property):
 
     data_type = bool
+    type_name = 'Boolean'
 
     def __init__(self, verbose_name=None, name=None, default=False, required=False,
                  validator=None, choices=None, unique=False):
@@ -253,6 +278,7 @@ class BooleanProperty(Property):
 class DateTimeProperty(Property):
 
     data_type = datetime.datetime
+    type_name = 'DateTime'
 
     def __init__(self, verbose_name=None, auto_now=False, auto_now_add=False, name=None,
                  default=None, required=False, validator=None, choices=None, unique=False):
@@ -267,10 +293,7 @@ class DateTimeProperty(Property):
 
     def get_value_for_datastore(self, model_instance):
         if self.auto_now:
-            save = model_instance._auto_update
-            model_instance._auto_update = False
             setattr(model_instance, self.name, self.now())
-            model_instance._auto_update = save
         return Property.get_value_for_datastore(self, model_instance)
 
     def now(self):
@@ -279,6 +302,7 @@ class DateTimeProperty(Property):
 class ReferenceProperty(Property):
 
     data_type = Key
+    type_name = 'Reference'
 
     def __init__(self, reference_class=None, collection_name=None,
                  verbose_name=None, name=None, default=None, required=False, validator=None, choices=None, unique=False):
@@ -286,6 +310,19 @@ class ReferenceProperty(Property):
         self.reference_class = reference_class
         self.collection_name = collection_name
         
+    def __get__(self, obj, objtype):
+        if obj:
+            value = getattr(obj, self.slot_name)
+            if value == self.default_value():
+                return value
+            # If the value is still the UUID for the referenced object, we need to create
+            # the object now that is the attribute has actually been accessed.  This lazy
+            # instantiation saves unnecessary roundtrips to SimpleDB
+            if isinstance(value, str) or isinstance(value, unicode):
+                value = self.reference_class._manager.get_object(self.reference_class, value)
+                setattr(obj, self.name, value)
+            return value
+    
     def __property_config__(self, model_class, property_name):
         Property.__property_config__(self, model_class, property_name)
         if self.collection_name is None:
@@ -295,27 +332,29 @@ class ReferenceProperty(Property):
         setattr(self.reference_class, self.collection_name,
                 _ReverseReferenceProperty(model_class, property_name))
 
+    def check_uuid(self, value):
+        # This does a bit of hand waving to "type check" the string
+        t = value.split('-')
+        if len(t) != 5:
+            raise ValueError
+
+    def check_instance(self, value):
+        try:
+            obj_lineage = value.get_lineage()
+            cls_lineage = self.reference_class.get_lineage()
+            if obj_lineage.startswith(cls_lineage):
+                return
+            raise TypeError, '%s not instance of %s' % (obj_lineage, cls_lineage)
+        except:
+            raise ValueError, '%s is not a Model' % value
+            
     def validate(self, value):
         if self.required and value==None:
             raise ValueError, '%s is a required property' % self.name
-        if value == None:
+        if value == self.default_value():
             return
-        if isinstance(value, str) or isinstance(value, unicode):
-            # ugly little hack - sometimes I want to just stick a UUID string
-            # in here rather than instantiate an object. 
-            # This does a bit of hand waving to "type check" the string
-            t = value.split('-')
-            if len(t) != 5:
-                raise ValueError
-        else:
-            try:
-                obj_lineage = value.get_lineage()
-                cls_lineage = self.reference_class.get_lineage()
-                if obj_lineage.startswith(cls_lineage):
-                    return
-                raise TypeError, '%s not instance of %s' % (obj_lineage, cls_lineage)
-            except:
-                raise ValueError, '%s is not a Model' % value
+        if not isinstance(value, str) and not isinstance(value, unicode):
+            self.check_instance(value)
         
 class _ReverseReferenceProperty(Property):
 
@@ -371,6 +410,7 @@ class CalculatedProperty(Property):
 class ListProperty(Property):
     
     data_type = list
+    type_name = 'List'
 
     def __init__(self, item_type, verbose_name=None, name=None, default=None, **kwds):
         if default is None:

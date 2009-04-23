@@ -108,7 +108,7 @@ class PGConverter:
 class PGManager(object):
 
     def __init__(self, cls, db_name, db_user, db_passwd,
-                 db_host, db_port, db_table, sql_dir):
+                 db_host, db_port, db_table, sql_dir, enable_ssl):
         self.cls = cls
         self.db_name = db_name
         self.db_user = db_user
@@ -162,7 +162,6 @@ class PGManager(object):
                     setattr(obj, prop.name, v)
                 else:
                     setattr(obj, prop.name, prop.default_value())
-        obj._auto_update = True
         return obj
 
     def _build_insert_qs(self, obj, calculated):
@@ -378,7 +377,6 @@ class PGManager(object):
                 prop = calculated[i]
                 prop._set_direct(obj, calc_values[i])
         self.commit()
-        obj._auto_update = True
 
     def delete_object(self, obj):
         qs = """DELETE FROM "%s" WHERE id='%s';""" % (self.db_table, obj.id)
