@@ -157,10 +157,11 @@ def test_unique():
     _objects['test_unique_tt'] = tt
     tt.name = "foo"
     try:
-        tt.put()
-        assert False
-    except(SDBPersistenceError):
-        pass
+        try:
+            tt.put()
+            assert False
+        except(SDBPersistenceError):
+            pass
     finally:
         t.delete()
 
