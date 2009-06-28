@@ -1,4 +1,4 @@
-# Copyright (c) 2006,2007 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006-2009 Mitch Garnaat http://garnaat.org/
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -14,52 +14,41 @@
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
 # OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
 # ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, 
+# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-"""
-Represents an EC2 Elastic IP Snapshot
-"""
-from boto.ec2.ec2object import EC2Object
+class InstanceState(object):
+    """
+    Represents the state of an EC2 Load Balancer Instance
+    """
 
-class Snapshot(EC2Object):
-    
-    def __init__(self, connection=None):
-        EC2Object.__init__(self, connection)
-        self.id = None
-        self.progress = None
-        self.start_time = None
-        self.volume_id = None
-        self.status = None
+    def __init__(self, load_balancer=None, description=None,
+                 state=None, instance_id=None, reason_code=None):
+        self.load_balancer = load_balancer
+        self.description = description
+        self.state = state
+        self.instance_id = instance_id
+        self.reason_code = reason_code
 
     def __repr__(self):
-        return 'Snapshot:%s' % self.id
+        return 'InstanceState:(%s,%s)' % (self.instance_id, self.state)
+
+    def startElement(self, name, attrs, connection):
+        return None
 
     def endElement(self, name, value, connection):
-        if name == 'snapshotId':
-            self.id = value
-        elif name == 'volumeId':
-            self.volume_id = value
-        elif name == 'startTime':
-            self.start_time = value
-        elif name == 'status':
-            self.status = value
+        if name == 'Description':
+            self.description = value
+        elif name == 'State':
+            self.state = value
+        elif name == 'InstanceId':
+            self.instance_id = value
+        elif name == 'ReasonCode':
+            self.reason_code = value
         else:
             setattr(self, name, value)
-
-    def _update(self, updated):
-        self.progress = updated.progress
-
-    def update(self):
-        rs = self.connection.get_all_snapshots([self.id])
-        if len(rs) > 0:
-            self._update(rs[0])
-        return self.progress
-    
-    def delete(self):
-        return self.connection.delete_snapshot(self.id)
 
 
 

@@ -15,7 +15,7 @@
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
 # OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABIL-
 # ITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, 
+# SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
@@ -64,17 +64,17 @@ from boto import config, UserAgent, handler
 try:
     from hashlib import sha1 as sha
     from hashlib import sha256 as sha256
-    
+
     if sys.version[:3] == "2.4":
         # we are using an hmac that expects a .new() method.
         class Faker:
             def __init__(self, which):
                 self.which = which
                 self.digest_size = self.which().digest_size
-            
+
             def new(self, *args, **kwargs):
                 return self.which(*args, **kwargs)
-        
+
         sha = Faker(sha)
         sha256 = Faker(sha256)
 
@@ -85,45 +85,45 @@ except ImportError:
 PORTS_BY_SECURITY = { True: 443, False: 80 }
 
 class AWSAuthConnection:
-    def __init__(self, server, aws_access_key_id=None,
-                 aws_secret_access_key=None, is_secure=True, port=None,
-                 proxy=None, proxy_port=None, proxy_user=None,
-                 proxy_pass=None, debug=0, https_connection_factory=None):
+    def __init__(self, host, aws_access_key_id=None, aws_secret_access_key=None,
+                 is_secure=True, port=None, proxy=None, proxy_port=None,
+                 proxy_user=None, proxy_pass=None, debug=0,
+                 https_connection_factory=None, path='/'):
         """
-        @type server: string
-        @param server: The server to make the connection to
-        
+        @type host: string
+        @param host: The host to make the connection to
+
         @type aws_access_key_id: string
         @param aws_access_key_id: AWS Access Key ID (provided by Amazon)
-        
+
         @type aws_secret_access_key: string
         @param aws_secret_access_key: Secret Access Key (provided by Amazon)
-        
+
         @type is_secure: boolean
         @param is_secure: Whether the connection is over SSL
-        
+
         @type https_connection_factory: list or tuple
         @param https_connection_factory: A pair of an HTTP connection
                                          factory and the exceptions to catch.
                                          The factory should have a similar
                                          interface to L{httplib.HTTPSConnection}.
-        
+
         @type proxy:
         @param proxy:
-        
+
         @type proxy_port: int
         @param proxy_port: The port to use when connecting over a proxy
-        
+
         @type proxy_user: string
         @param proxy_user: The username to connect with on the proxy
-        
+
         @type proxy_pass: string
         @param proxy_pass: The password to use when connection over a proxy.
-        
+
         @type port: integer
         @param port: The port to use to connect
         """
-        
+
         self.num_retries = 5
         self.is_secure = is_secure
         self.handle_proxy(proxy, proxy_port, proxy_user, proxy_pass)
@@ -140,7 +140,8 @@ class AWSAuthConnection:
             self.protocol = 'https'
         else:
             self.protocol = 'http'
-        self.server = server
+        self.host = host
+        self.path = path
         if debug:
             self.debug = debug
         else:
@@ -149,27 +150,14 @@ class AWSAuthConnection:
             self.port = port
         else:
             self.port = PORTS_BY_SECURITY[is_secure]
-        if self.port == 80:
-            self.server_name = server
-        else:
-            # This unfortunate little hack can be attributed to
-            # a difference in the 2.6 version of httplib.  In old
-            # versions, it would append ":443" to the hostname sent
-            # in the Host header and so we needed to make sure we
-            # did the same when calculating the signature.  In 2.6
-            # it no longer does that.  Hence, this kludge.
-            if sys.version[:3] == "2.6" and self.port in [80, 443]:
-                self.server_name = server
-            else:
-                self.server_name = '%s:%d' % (server, self.port)
-        
+            
         if aws_access_key_id:
             self.aws_access_key_id = aws_access_key_id
         elif os.environ.has_key('AWS_ACCESS_KEY_ID'):
             self.aws_access_key_id = os.environ['AWS_ACCESS_KEY_ID']
         elif config.has_option('Credentials', 'aws_access_key_id'):
             self.aws_access_key_id = config.get('Credentials', 'aws_access_key_id')
-        
+
         if aws_secret_access_key:
             self.aws_secret_access_key = aws_secret_access_key
         elif os.environ.has_key('AWS_SECRET_ACCESS_KEY'):
@@ -186,8 +174,45 @@ class AWSAuthConnection:
 
         # cache up to 20 connections
         self._cache = boto.utils.LRUCache(20)
-        self.refresh_http_connection(self.server, self.is_secure)
+        self.refresh_http_connection(self.host, self.is_secure)
         self._last_rs = None
+
+    def get_path(self, path='/'):
+        pos = path.find('?')
+        if pos >= 0:
+            params = path[pos:]
+            path = path[:pos]
+        else:
+            params = None
+        if path[-1] == '/':
+            need_trailing = True
+        else:
+            need_trailing = False
+        path_elements = self.path.split('/')
+        path_elements.extend(path.split('/'))
+        path_elements = [p for p in path_elements if p]
+        path = '/' + '/'.join(path_elements)
+        if path[-1] != '/' and need_trailing:
+            path += '/'
+        if params:
+            path = path + params
+        return path
+
+    def server_name(self):
+        if self.port == 80:
+            signature_host = self.host
+        else:
+            # This unfortunate little hack can be attributed to
+            # a difference in the 2.6 version of httplib.  In old
+            # versions, it would append ":443" to the hostname sent
+            # in the Host header and so we needed to make sure we
+            # did the same when calculating the V2 signature.  In 2.6
+            # it no longer does that.  Hence, this kludge.
+            if sys.version[:3] == "2.6" and self.port == 443:
+                signature_host = self.host
+            else:
+                signature_host = '%s:%d' % (self.host, self.port)
+        return signature_host
 
     def handle_proxy(self, proxy, proxy_port, proxy_user, proxy_pass):
         self.proxy = proxy
@@ -225,7 +250,7 @@ class AWSAuthConnection:
 
     def get_http_connection(self, host, is_secure):
         if host is None:
-            host = self.server_name
+            host = self.server_name()
         cached_name = is_secure and 'https://' or 'http://'
         cached_name += host
         if cached_name in self._cache:
@@ -236,7 +261,7 @@ class AWSAuthConnection:
         if self.use_proxy:
             host = '%s:%d' % (self.proxy, int(self.proxy_port))
         if host is None:
-            host = self.server_name
+            host = self.server_name()
         boto.log.debug('establishing HTTP connection')
         if is_secure:
             if self.use_proxy:
@@ -256,12 +281,12 @@ class AWSAuthConnection:
             self._cache[cached_name].close()
         self._cache[cached_name] = connection
         # update self.connection for backwards-compatibility
-        if host.split(':')[0] == self.server and is_secure == self.is_secure:
+        if host.split(':')[0] == self.host and is_secure == self.is_secure:
             self.connection = connection
         return connection
 
     def proxy_ssl(self):
-        host = '%s:%d' % (self.server, self.port)
+        host = '%s:%d' % (self.host, self.port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             sock.connect((self.proxy, int(self.proxy_port)))
@@ -294,7 +319,7 @@ class AWSAuthConnection:
         return h
 
     def prefix_proxy_to_path(self, path, host=None):
-        path = self.protocol + '://' + (host or self.server) + path
+        path = self.protocol + '://' + (host or self.host) + path
         return path
 
     def get_proxy_auth_header(self):
@@ -375,7 +400,8 @@ class AWSAuthConnection:
             raise BotoClientError('Please report this exception as a Boto Issue!')
 
     def make_request(self, method, path, headers=None, data='', host=None,
-            auth_path=None, sender=None):
+                     auth_path=None, sender=None):
+        path = self.get_path(path)
         if headers == None:
             headers = {'User-Agent' : UserAgent}
         else:
@@ -388,10 +414,12 @@ class AWSAuthConnection:
                 # If is_secure, we don't have to set the proxy authentication
                 # header here, we did that in the CONNECT to the proxy.
                 headers.update(self.get_proxy_auth_header())
-        self.add_aws_auth_header(headers, method, auth_path or path)
+        request_string = auth_path or path
+        self.add_aws_auth_header(headers, method, request_string)
         return self._mexe(method, path, data, headers, host, sender)
 
     def add_aws_auth_header(self, headers, method, path):
+        path = self.get_path(path)
         if not headers.has_key('Date'):
             headers['Date'] = time.strftime("%a, %d %b %Y %H:%M:%S GMT",
                                             time.gmtime())
@@ -412,10 +440,10 @@ class AWSQueryConnection(AWSAuthConnection):
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
                  is_secure=True, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None, host=None, debug=0,
-                 https_connection_factory=None):
+                 https_connection_factory=None, path='/'):
         AWSAuthConnection.__init__(self, host, aws_access_key_id, aws_secret_access_key,
                                    is_secure, port, proxy, proxy_port, proxy_user, proxy_pass,
-                                   debug,  https_connection_factory)
+                                   debug,  https_connection_factory, path)
 
     def get_utf8_value(self, value):
         if not isinstance(value, str) and not isinstance(value, unicode):
@@ -455,8 +483,7 @@ class AWSQueryConnection(AWSAuthConnection):
 
     def calc_signature_2(self, params, verb, path):
         boto.log.debug('using calc_signature_2')
-        string_to_sign = '%s\n%s\n%s\n' % (verb, self.server_name.lower(),
-                                           path or '/')
+        string_to_sign = '%s\n%s\n%s\n' % (verb, self.server_name().lower(), path)
         if self.hmac_256:
             hmac = self.hmac_256.copy()
             params['SignatureMethod'] = 'HmacSHA256'
@@ -490,10 +517,9 @@ class AWSQueryConnection(AWSAuthConnection):
             raise BotoClientError('Unknown Signature Version: %s' % self.SignatureVersion)
         return t
 
-    def make_request(self, action, params=None, path=None, verb='GET'):
+    def make_request(self, action, params=None, path='/', verb='GET'):
+        path = self.get_path(path)
         headers = {'User-Agent' : UserAgent}
-        if path == None:
-            path = '/'
         if params == None:
             params = {}
         params['Action'] = action
@@ -502,23 +528,29 @@ class AWSQueryConnection(AWSAuthConnection):
         params['SignatureVersion'] = self.SignatureVersion
         params['Timestamp'] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
         qs, signature = self.get_signature(params, verb, path)
-        qs = path + '?' + qs + '&Signature=' + urllib.quote(signature)
+        if verb == 'POST':
+            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+            request_body = qs + '&Signature=' + urllib.quote(signature)
+            qs = '/'
+        else:
+            request_body = None
+            qs = path + '?' + qs + '&Signature=' + urllib.quote(signature)
         if self.use_proxy:
             qs = self.prefix_proxy_to_path(qs)
-        return self._mexe(verb, qs, None, headers)
+        return self._mexe(verb, qs, request_body, headers)
 
     def build_list_params(self, params, items, label):
         if isinstance(items, str):
             items = [items]
         for i in range(1, len(items)+1):
             params['%s.%d' % (label, i)] = items[i-1]
-            
+
     # generics
 
-    def get_list(self, action, params, markers, path='/', parent=None):
+    def get_list(self, action, params, markers, path='/', parent=None, verb='GET'):
         if not parent:
             parent = self
-        response = self.make_request(action, params, path)
+        response = self.make_request(action, params, path, verb)
         body = response.read()
         boto.log.debug(body)
         if response.status == 200:
@@ -530,11 +562,11 @@ class AWSQueryConnection(AWSAuthConnection):
             boto.log.error('%s %s' % (response.status, response.reason))
             boto.log.error('%s' % body)
             raise self.ResponseError(response.status, response.reason, body)
-        
-    def get_object(self, action, params, cls, path='/', parent=None):
+
+    def get_object(self, action, params, cls, path='/', parent=None, verb='GET'):
         if not parent:
             parent = self
-        response = self.make_request(action, params, path)
+        response = self.make_request(action, params, path, verb)
         body = response.read()
         boto.log.debug(body)
         if response.status == 200:
@@ -546,11 +578,11 @@ class AWSQueryConnection(AWSAuthConnection):
             boto.log.error('%s %s' % (response.status, response.reason))
             boto.log.error('%s' % body)
             raise self.ResponseError(response.status, response.reason, body)
-        
-    def get_status(self, action, params, path='/', parent=None):
+
+    def get_status(self, action, params, path='/', parent=None, verb='GET'):
         if not parent:
             parent = self
-        response = self.make_request(action, params, path)
+        response = self.make_request(action, params, path, verb)
         body = response.read()
         boto.log.debug(body)
         if response.status == 200:

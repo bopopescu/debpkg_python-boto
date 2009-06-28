@@ -18,29 +18,30 @@
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
-#
-"""
-This module provides an interface to the Elastic Compute Cloud (EC2)
-service from AWS.
-"""
-from boto.ec2.connection import EC2Connection
 
-def regions(**kw_params):
+class InstanceInfo(object):
     """
-    Get all available regions for the EC2 service.
-    You may pass any of the arguments accepted by the EC2Connection
-    object's constructor as keyword arguments and they will be
-    passed along to the EC2Connection object.
-        
-    @rtype: list
-    @return: A list of L{RegionInfo<boto.ec2.regioninfo.RegionInfo>}
+    Represents an EC2 Instance status response from CloudWatch
     """
-    c = EC2Connection(**kw_params)
-    return c.get_all_regions()
-
-def connect_to_region(region_name, **kw_params):
-    for region in regions(**kw_params):
-        if region.name == region_name:
-            return region.connect(**kw_params)
-    return None
     
+    def __init__(self, connection=None, id=None, state=None):
+        self.connection = connection
+        self.id = id
+        self.state = state
+
+    def __repr__(self):
+        return 'InstanceInfo:%s' % self.id
+
+    def startElement(self, name, attrs, connection):
+        return None
+
+    def endElement(self, name, value, connection):
+        if name == 'instanceId' or name == 'InstanceId':
+            self.id = value
+        elif name == 'state':
+            self.state = value
+        else:
+            setattr(self, name, value)
+
+            
+

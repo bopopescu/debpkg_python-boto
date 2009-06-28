@@ -95,12 +95,13 @@ class S3Connection(AWSAuthConnection):
                  is_secure=True, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None,
                  host=DefaultHost, debug=0, https_connection_factory=None,
-                 calling_format=SubdomainCallingFormat()):
+                 calling_format=SubdomainCallingFormat(), path='/'):
         self.calling_format = calling_format
         AWSAuthConnection.__init__(self, host,
                 aws_access_key_id, aws_secret_access_key,
                 is_secure, port, proxy, proxy_port, proxy_user, proxy_pass,
-                debug=debug, https_connection_factory=https_connection_factory)
+                debug=debug, https_connection_factory=https_connection_factory,
+                path=path)
 
     def __iter__(self):
         return self.get_all_buckets()
@@ -204,7 +205,7 @@ class S3Connection(AWSAuthConnection):
             protocol = 'http'
         else:
             protocol = self.protocol
-        return self.calling_format.build_url_base(protocol, self.server,
+        return self.calling_format.build_url_base(protocol, self.server_name(),
                                                   bucket, key) + query_part
 
     def get_all_buckets(self):
@@ -296,7 +297,7 @@ class S3Connection(AWSAuthConnection):
             key = key.name
         path = self.calling_format.build_path_base(bucket, key)
         auth_path = self.calling_format.build_auth_path(bucket, key)
-        host = self.calling_format.build_host(self.server_name, bucket)
+        host = self.calling_format.build_host(self.server_name(), bucket)
         if query_args:
             path += '?' + query_args
             auth_path += '?' + query_args
