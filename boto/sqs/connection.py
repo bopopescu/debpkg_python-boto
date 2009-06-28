@@ -45,13 +45,13 @@ class SQSConnection(AWSQueryConnection):
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
                  is_secure=True, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None, debug=0,
-                 https_connection_factory=None, region=None):
+                 https_connection_factory=None, region=None, path='/'):
         if not region:
             region = SQSRegionInfo(self, self.DefaultRegionName, self.DefaultRegionEndpoint)
         self.region = region
         AWSQueryConnection.__init__(self, aws_access_key_id, aws_secret_access_key,
                                     is_secure, port, proxy, proxy_port, proxy_user, proxy_pass,
-                                    self.region.endpoint, debug, https_connection_factory)
+                                    self.region.endpoint, debug, https_connection_factory, path)
 
     def create_queue(self, queue_name, visibility_timeout=None):
         """
@@ -121,7 +121,8 @@ class SQSConnection(AWSQueryConnection):
         params = {'Attribute.Name' : attribute, 'Attribute.Value' : value}
         return self.get_status('SetQueueAttributes', params, queue.id)
 
-    def receive_message(self, queue, number_messages=1, visibility_timeout=None):
+    def receive_message(self, queue, number_messages=1, visibility_timeout=None,
+                        attributes=None):
         """
         Read messages from an SQS Queue.
 
@@ -134,11 +135,17 @@ class SQSConnection(AWSQueryConnection):
         @type visibility_timeout: int
         @param visibility_timeout: The number of seconds the message should remain invisible
                                    to other queue readers (default=None which uses the Queues default)
+
+        @type attributes: list of strings
+        @param attributes: A list of additional attributes that will be returned
+                           with the response.  Valid values: SenderId | SentTimestamp.
         
         """
         params = {'MaxNumberOfMessages' : number_messages}
         if visibility_timeout:
             params['VisibilityTimeout'] = visibility_timeout
+        if attributes:
+            self.build_list_params(self, params, attributes, 'AttributeName')
         return self.get_list('ReceiveMessage', params, [('Message', queue.message_class)],
                              queue.id, queue)
 
@@ -148,7 +155,7 @@ class SQSConnection(AWSQueryConnection):
 
     def send_message(self, queue, message_content):
         params = {'MessageBody' : message_content}
-        return self.get_status('SendMessage', params, queue.id)
+        return self.get_object('SendMessage', params, Message, queue.id)
 
     def change_message_visibility(self, queue, receipt_handle, visibility_timeout):
         """

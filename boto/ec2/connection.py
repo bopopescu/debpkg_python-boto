@@ -39,12 +39,13 @@ from boto.ec2.snapshot import Snapshot
 from boto.ec2.zone import Zone
 from boto.ec2.securitygroup import SecurityGroup
 from boto.ec2.regioninfo import RegionInfo
+from boto.ec2.instanceinfo import InstanceInfo
 from boto.ec2.reservedinstance import ReservedInstancesOffering, ReservedInstance
 from boto.exception import EC2ResponseError
 
 class EC2Connection(AWSQueryConnection):
 
-    APIVersion = boto.config.get('Boto', 'ec2_version', '2009-03-01')
+    APIVersion = boto.config.get('Boto', 'ec2_version', '2009-04-04')
     DefaultRegionName = boto.config.get('Boto', 'ec2_region_name', 'us-east-1')
     DefaultRegionEndpoint = boto.config.get('Boto', 'ec2_region_endpoint',
                                             'us-east-1.ec2.amazonaws.com')
@@ -52,9 +53,9 @@ class EC2Connection(AWSQueryConnection):
     ResponseError = EC2ResponseError
 
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
-                 is_secure=True, port=None, proxy=None, proxy_port=None,
+                 is_secure=True, host=None, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None, debug=0,
-                 https_connection_factory=None, region=None):
+                 https_connection_factory=None, region=None, path='/'):
         """
         Init method to create a new connection to EC2.
         
@@ -65,7 +66,7 @@ class EC2Connection(AWSQueryConnection):
         self.region = region
         AWSQueryConnection.__init__(self, aws_access_key_id, aws_secret_access_key,
                                     is_secure, port, proxy, proxy_port, proxy_user, proxy_pass,
-                                    self.region.endpoint, debug, https_connection_factory)
+                                    self.region.endpoint, debug, https_connection_factory, path)
 
     def get_params(self):
         """
@@ -211,10 +212,11 @@ class EC2Connection(AWSQueryConnection):
         return self.get_object('DescribeImageAttribute', params, ImageAttribute)
         
     def modify_image_attribute(self, image_id, attribute='launchPermission',
-                               operation='add', user_ids=None, groups=None):
+                               operation='add', user_ids=None, groups=None,
+                               product_codes=None):
         """
         Changes an attribute of an image.
-        See http://docs.amazonwebservices.com/AWSEC2/2008-02-01/DeveloperGuide/ApiReference-Query-ModifyImageAttribute.html
+        See http://docs.amazonwebservices.com/AWSEC2/latest/APIReference/ApiReference-query-ModifyImageAttribute.html
         
         @type image_id: string
         @param image_id: The image id you wish to change
@@ -223,13 +225,18 @@ class EC2Connection(AWSQueryConnection):
         @param attribute: The attribute you wish to change
         
         @type operation: string
-        @param operation: Either add or remove (this is required for changing launchPermissions
+        @param operation: Either add or remove (this is required for changing launchPermissions)
         
         @type user_ids: list
         @param user_ids: The Amazon IDs of users to add/remove attributes
         
         @type groups: list
         @param groups: The groups to add/remove attributes
+
+        @type product_codes: list
+        @param product_codes: Amazon DevPay product code. Currently only one
+                              product code can be associated with an AMI. Once
+                              set, the product code cannot be changed or reset.
         """
         params = {'ImageId' : image_id,
                   'Attribute' : attribute,
@@ -238,6 +245,8 @@ class EC2Connection(AWSQueryConnection):
             self.build_list_params(params, user_ids, 'UserId')
         if groups:
             self.build_list_params(params, groups, 'UserGroup')
+        if product_codes:
+            self.build_list_params(params, product_codes, 'ProductCode')
         return self.get_status('ModifyImageAttribute', params)
 
     def reset_image_attribute(self, image_id, attribute='launchPermission'):
@@ -268,7 +277,7 @@ class EC2Connection(AWSQueryConnection):
         @param instance_ids: A list of strings of instance IDs
         
         @rtype: list
-        @return: A list of L{Instances<boto.ec2.instance.Instance>}
+        @return: A list of  L{Reservation<boto.ec2.instance.Reservation>}
         """
         params = {}
         if instance_ids:
@@ -341,7 +350,7 @@ class EC2Connection(AWSQueryConnection):
             params['KernelId'] = kernel_id
         if ramdisk_id:
             params['RamdiskId'] = ramdisk_id
-        return self.get_object('RunInstances', params, Reservation)
+        return self.get_object('RunInstances', params, Reservation, verb='POST')
         
     def terminate_instances(self, instance_ids=None):
         """
@@ -514,7 +523,9 @@ class EC2Connection(AWSQueryConnection):
         """
         if isinstance(zone, Zone):
             zone = zone.name
-        params = {'Size': size, 'AvailabilityZone' : zone}
+        params = {'AvailabilityZone' : zone}
+        if size:
+            params['Size'] = size
         if snapshot:
             if isinstance(snapshot, Snapshot):
                 snapshot = snapshot.id
@@ -531,10 +542,12 @@ class EC2Connection(AWSQueryConnection):
                   'Device' : device}
         return self.get_status('AttachVolume', params)
 
-    def detach_volume(self, volume_id, instance_id, device='', force=False):
-        params = {'InstanceId' : instance_id,
-                  'VolumeId' : volume_id,
-                  'Device' : device}
+    def detach_volume(self, volume_id, instance_id=None, device=None, force=False):
+        params = {'VolumeId' : volume_id}
+        if instance_id:
+            params['InstanceId'] = instance_id
+        if device:
+            params['Device'] = device
         if force:
             params['Force'] = 'true'
         return self.get_status('DetachVolume', params)
@@ -874,4 +887,34 @@ class EC2Connection(AWSQueryConnection):
         params = {'ReservedInstancesOfferingId' : reserved_instances_offering_id,
                   'InstanceCount' : instance_count}
         return self.get_object('PurchaseReservedInstancesOffering', params, ReservedInstance)
+
+    #
+    # Monitoring
+    #
+
+    def monitor_instance(self, instance_id):
+        """
+        Enable CloudWatch monitoring for the supplied instance.
+        
+        @type instance_id: string
+        @param instance_id: The instance id
+        
+        @rtype: list
+        @return: A list of L{InstanceInfo<boto.ec2.instanceinfo.InstanceInfo>}
+        """
+        params = {'InstanceId' : instance_id}
+        return self.get_list('MonitorInstances', params, [('item', InstanceInfo)])
+
+    def unmonitor_instance(self, instance_id):
+        """
+        Disable CloudWatch monitoring for the supplied instance.
+        
+        @type instance_id: string
+        @param instance_id: The instance id
+        
+        @rtype: list
+        @return: A list of L{InstanceInfo<boto.ec2.instanceinfo.InstanceInfo>}
+        """
+        params = {'InstanceId' : instance_id}
+        return self.get_list('UnmonitorInstances', params, [('item', InstanceInfo)])
 

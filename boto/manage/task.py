@@ -51,74 +51,120 @@ class Task(Model):
     last_executed = DateTimeProperty()
     last_status = IntegerProperty()
     last_output = StringProperty()
+    message_id = StringProperty()
 
-    def check(self, msg):
+    @classmethod
+    def start_all(cls, queue_name):
+        for task in cls.all():
+            task.start(queue_name)
+            
+    def __init__(self, id=None, **kw):
+        Model.__init__(self, id, **kw)
+        self.hourly = self.hour == '*'
+        self.daily = self.hour != '*'
+        self.now = datetime.datetime.utcnow()
+        
+    def check(self):
         """
-        Determine if the Task needs to run right now or not.  If it does, run it and if it
-        doesn't, do nothing.
+        Determine how long until the next scheduled time for a Task.
+        Returns the number of seconds until the next scheduled time or zero
+        if the task needs to be run immediately.
+        If it's an hourly task and it's never been run, run it now.
+        If it's a daily task and it's never been run and the hour is right, run it now.
         """
         need_to_run = False
-        # get current time in UTC
-        now = datetime.datetime.utcnow()
-        if self.hour == '*':
-            # run the task hourly
-            # if it's never been run before, run it now
-            if not self.last_executed:
-                need_to_run = True
-            else:
-                delta = now - self.last_executed
-                if delta.seconds >= 60*60:
-                    need_to_run = True
-        else:
-            hour = int(self.hour)
-            next = datetime.datetime(now.year, now.month, now.day, hour)
-            delta = now - next
-            if delta.days >= 0:
-                need_to_run = True
-        if need_to_run:
-            self.run()
-            self.last_executed = now
-            self.put()
-            q = msg.queue
-            msg.delete()
-            self.schedule(q)
+        boto.log.info('checking Task[%s]-now=%s, last=%s' % (self.name, self.now, self.last_executed))
 
-    def schedule(self, queue):
-        msg = queue.new_message(self.id)
-        queue.write(msg)
-        
-    def run(self):
-        boto.log.info('running:%s' % self.command)
+        if self.hourly and not self.last_executed:
+            return 0
+            
+        if self.daily and not self.last_executed:
+            if int(self.hour) == self.now.hour:
+                return 0
+
+        delta = self.now - self.last_executed
+        if self.hourly:
+            if delta.seconds >= 60*60:
+                return 0
+            else:
+                return 60*60 - delta.seconds
+        else:
+            if delta.days >= 1:
+                return 0
+            else:
+                return min(60*60*24-delta.seconds, 43200)
+    
+    def _run(self, msg, vtimeout):
+        boto.log.info('Task[%s] - running:%s' % (self.name, self.command))
         log_fp = StringIO.StringIO()
         process = subprocess.Popen(self.command, shell=True, stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        nsecs = 5
+        current_timeout = vtimeout
         while process.poll() == None:
-            time.sleep(1)
-            t = process.communicate()
-            log_fp.write(t[0])
-            log_fp.write(t[1])
-        boto.log.info(log_fp.getvalue())
-        boto.log.info('output: %s' % log_fp.getvalue())
+            boto.log.info('nsecs=%s, timeout=%s' % (nsecs, current_timeout))
+            if nsecs >= current_timeout:
+                current_timeout += vtimeout
+                boto.log.info('Task[%s] - setting timeout to %d seconds' % (self.name, current_timeout))
+                if msg:
+                    msg.change_visibility(current_timeout)
+            time.sleep(5)
+            nsecs += 5
+        t = process.communicate()
+        log_fp.write(t[0])
+        log_fp.write(t[1])
+        boto.log.info('Task[%s] - output: %s' % (self.name, log_fp.getvalue()))
+        self.last_executed = self.now
         self.last_status = process.returncode
         self.last_output = log_fp.getvalue()[0:1023]
 
-class TaskPoller:
+    def run(self, msg, vtimeout=60):
+        delay = self.check()
+        boto.log.info('Task[%s] - delay=%s seconds' % (self.name, delay))
+        if delay == 0:
+            self._run(msg, vtimeout)
+            queue = msg.queue
+            new_msg = queue.new_message(self.id)
+            new_msg = queue.write(msg)
+            self.message_id = new_msg.id
+            self.put()
+            boto.log.info('Task[%s] - new message id=%s' % (self.name, new_msg.id))
+            msg.delete()
+            boto.log.info('Task[%s] - deleted message %s' % (self.name, msg.id))
+        else:
+            boto.log.info('new_vtimeout: %d' % delay)
+            msg.change_visibility(delay)
+
+    def start(self, queue_name):
+        boto.log.info('Task[%s] - starting with queue: %s' % (self.name, queue_name))
+        queue = boto.lookup('sqs', queue_name)
+        msg = queue.new_message(self.id)
+        msg = queue.write(msg)
+        self.message_id = msg.id
+        self.put()
+        boto.log.info('Task[%s] - start successful' % self.name)
+
+class TaskPoller(object):
 
     def __init__(self, queue_name):
         self.sqs = boto.connect_sqs()
         self.queue = self.sqs.lookup(queue_name)
 
-    def poll(self, wait=60):
+    def poll(self, wait=60, vtimeout=60):
         while 1:
-            m = self.queue.read(60*5)
+            m = self.queue.read(vtimeout)
             if m:
                 task = Task.get_by_id(m.get_body())
                 if task:
-                    task.check(m)
+                    if not task.message_id or m.id == task.message_id:
+                        boto.log.info('Task[%s] - read message %s' % (task.name, m.id))
+                        task.run(m, vtimeout)
+                    else:
+                        boto.log.info('Task[%s] - found extraneous message, ignoring' % task.name)
             else:
                 time.sleep(wait)
 
-        
+
 
     
 

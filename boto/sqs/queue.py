@@ -38,14 +38,28 @@ class Queue:
         self.message_class = message_class
         self.visibility_timeout = None
 
+    def _id(self):
+        if self.url:
+            val = urlparse.urlparse(self.url)[2]
+        else:
+            val = self.url
+        return val
+    id = property(_id)
+
+    def _name(self):
+        if self.url:
+            val = urlparse.urlparse(self.url)[2].split('/')[2]
+        else:
+            val = self.url
+        return  val
+    name = property(_name)
+
     def startElement(self, name, attrs, connection):
         return None
 
     def endElement(self, name, value, connection):
         if name == 'QueueUrl':
             self.url = value
-            if value:
-                self.id = urlparse.urlparse(value)[2]
         elif name == 'VisibilityTimeout':
             self.visibility_timeout = int(value)
         else:
@@ -142,7 +156,10 @@ class Queue:
         @rtype: bool
         @return: True if successful, False if not
         """
-        return self.connection.send_message(self, message.get_body_encoded())
+        new_msg = self.connection.send_message(self, message.get_body_encoded())
+        message.id = new_msg.id
+        message.md5 = new_msg.md5
+        return message
 
     def new_message(self, body=''):
         """
