@@ -6,7 +6,7 @@ Build-Depends: debhelper (>= 5), python-support (>= 0.6)
 Homepage: http://code.google.com/p/boto/
 Vcs-Git: git://git.debian.org/git/users/eevans/python-boto
 Vcs-Browser: http://git.debian.org/?p=users/eevans/python-boto
-Standards-Version: 3.8.1
+Standards-Version: 3.8.2
 
 Package: python-boto
 Architecture: all

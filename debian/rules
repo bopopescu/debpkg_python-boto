@@ -41,7 +41,7 @@ install: build-stamp
 binary-arch:
 binary-indep: install
 	dh_installdocs README doc/*.txt
-	dh_installexamples cq.py s3put
+	dh_installexamples cq.py bin/s3put bin/sdbadmin
 	dh_installchangelogs
 	dh_compress
 	dh_fixperms
