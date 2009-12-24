@@ -1,5 +1,6 @@
 # Copyright (c) 2006-2009 Mitch Garnaat http://garnaat.org/
 # Copyright (c) 2008 rPath, Inc.
+# Copyright (c) 2009 The Echo Nest Corporation
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -47,6 +48,7 @@ import time
 import urllib, urlparse
 import os
 import xml.sax
+import Queue
 import boto
 from boto.exception import AWSConnectionError, BotoClientError, BotoServerError
 from boto.resultset import ResultSet
@@ -84,44 +86,57 @@ except ImportError:
 
 PORTS_BY_SECURITY = { True: 443, False: 80 }
 
+class ConnectionPool:
+    def __init__(self, hosts, connections_per_host):
+        self._hosts = boto.utils.LRUCache(hosts)
+        self.connections_per_host = connections_per_host
+
+    def __getitem__(self, key):
+        if key not in self._hosts:
+            self._hosts[key] = Queue.Queue(self.connections_per_host)
+        return self._hosts[key]
+
+    def __repr__(self):
+        return 'ConnectionPool:%s' % ','.join(self._hosts._dict.keys())
+
 class AWSAuthConnection:
     def __init__(self, host, aws_access_key_id=None, aws_secret_access_key=None,
                  is_secure=True, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None, debug=0,
                  https_connection_factory=None, path='/'):
         """
-        @type host: string
-        @param host: The host to make the connection to
+        :type host: string
+        :param host: The host to make the connection to
 
-        @type aws_access_key_id: string
-        @param aws_access_key_id: AWS Access Key ID (provided by Amazon)
+        :type aws_access_key_id: string
+        :param aws_access_key_id: AWS Access Key ID (provided by Amazon)
 
-        @type aws_secret_access_key: string
-        @param aws_secret_access_key: Secret Access Key (provided by Amazon)
+        :type aws_secret_access_key: string
+        :param aws_secret_access_key: Secret Access Key (provided by Amazon)
 
-        @type is_secure: boolean
-        @param is_secure: Whether the connection is over SSL
+        :type is_secure: boolean
+        :param is_secure: Whether the connection is over SSL
 
-        @type https_connection_factory: list or tuple
-        @param https_connection_factory: A pair of an HTTP connection
+        :type https_connection_factory: list or tuple
+        :param https_connection_factory: A pair of an HTTP connection
                                          factory and the exceptions to catch.
                                          The factory should have a similar
                                          interface to L{httplib.HTTPSConnection}.
 
-        @type proxy:
-        @param proxy:
+        :type proxy:
+        :param proxy:
 
-        @type proxy_port: int
-        @param proxy_port: The port to use when connecting over a proxy
+        :type proxy_port: int
+        :param proxy_port: The port to use when connecting over a proxy
 
-        @type proxy_user: string
-        @param proxy_user: The username to connect with on the proxy
+        :type proxy_user: string
+        :param proxy_user: The username to connect with on the proxy
 
-        @type proxy_pass: string
-        @param proxy_pass: The password to use when connection over a proxy.
+        :type proxy_pass: string
+        :param proxy_pass: The password to use when connection over a proxy.
 
-        @type port: integer
-        @param port: The port to use to connect
+        :type port: integer
+        :param port: The port to use to connect
         """
 
         self.num_retries = 5
@@ -172,10 +187,25 @@ class AWSAuthConnection:
         else:
             self.hmac_256 = None
 
-        # cache up to 20 connections
-        self._cache = boto.utils.LRUCache(20)
-        self.refresh_http_connection(self.host, self.is_secure)
+        # cache up to 20 connections per host, up to 20 hosts
+        self._pool = ConnectionPool(20, 20)
+        self._connection = (self.server_name(), self.is_secure)
         self._last_rs = None
+
+    def __repr__(self):
+        return '%s:%s' % (self.__class__.__name__, self.host)
+
+    def _cached_name(self, host, is_secure):
+        if host is None:
+            host = self.server_name()
+        cached_name = is_secure and 'https://' or 'http://'
+        cached_name += host
+        return cached_name
+
+    def connection(self):
+        return self.get_http_connection(*self._connection)
+
+    connection = property(connection)
 
     def get_path(self, path='/'):
         pos = path.find('?')
@@ -198,8 +228,10 @@ class AWSAuthConnection:
             path = path + params
         return path
 
-    def server_name(self):
-        if self.port == 80:
+    def server_name(self, port=None):
+        if not port:
+            port = self.port
+        if port == 80:
             signature_host = self.host
         else:
             # This unfortunate little hack can be attributed to
@@ -208,10 +240,10 @@ class AWSAuthConnection:
             # in the Host header and so we needed to make sure we
             # did the same when calculating the V2 signature.  In 2.6
             # it no longer does that.  Hence, this kludge.
-            if sys.version[:3] == "2.6" and self.port == 443:
+            if sys.version[:3] == "2.6" and port == 443:
                 signature_host = self.host
             else:
-                signature_host = '%s:%d' % (self.host, self.port)
+                signature_host = '%s:%d' % (self.host, port)
         return signature_host
 
     def handle_proxy(self, proxy, proxy_port, proxy_user, proxy_pass):
@@ -249,15 +281,13 @@ class AWSAuthConnection:
         self.use_proxy = (self.proxy != None)
 
     def get_http_connection(self, host, is_secure):
-        if host is None:
-            host = self.server_name()
-        cached_name = is_secure and 'https://' or 'http://'
-        cached_name += host
-        if cached_name in self._cache:
-            return self._cache[cached_name]
-        return self.refresh_http_connection(host, is_secure)
+        queue = self._pool[self._cached_name(host, is_secure)]
+        try:
+            return queue.get_nowait()
+        except Queue.Empty:
+            return self.new_http_connection(host, is_secure)
 
-    def refresh_http_connection(self, host, is_secure):
+    def new_http_connection(self, host, is_secure):
         if self.use_proxy:
             host = '%s:%d' % (self.proxy, int(self.proxy_port))
         if host is None:
@@ -274,16 +304,19 @@ class AWSAuthConnection:
             connection = httplib.HTTPConnection(host)
         if self.debug > 1:
             connection.set_debuglevel(self.debug)
-        cached_name = is_secure and 'https://' or 'http://'
-        cached_name += host
-        if cached_name in self._cache:
-            boto.log.debug('closing old HTTP connection')
-            self._cache[cached_name].close()
-        self._cache[cached_name] = connection
-        # update self.connection for backwards-compatibility
+        # self.connection must be maintained for backwards-compatibility
+        # however, it must be dynamically pulled from the connection pool
+        # set a private variable which will enable that
         if host.split(':')[0] == self.host and is_secure == self.is_secure:
-            self.connection = connection
+            self._connection = (host, is_secure)
         return connection
+
+    def put_http_connection(self, host, is_secure, connection):
+        try:
+            self._pool[self._cached_name(host, is_secure)].put_nowait(connection)
+        except Queue.Full:
+            # gracefully fail in case of pool overflow
+            connection.close()
 
     def proxy_ssl(self):
         host = '%s:%d' % (self.host, self.port)
@@ -311,15 +344,20 @@ class AWSAuthConnection:
         # We can safely close the response, it duped the original socket
         resp.close()
 
-        # Wrap the socket in an SSL socket
-        sslSock = socket.ssl(sock, None, None)
         h = httplib.HTTPConnection(host)
+        
+        # Wrap the socket in an SSL socket
+        if hasattr(httplib, 'ssl'):
+            sslSock = httplib.ssl.SSLSocket(sock)
+        else: # Old Python, no ssl module
+            sslSock = socket.ssl(sock, None, None)
+            sslSock = httplib.FakeSocket(sock, sslSock)
         # This is a bit unclean
-        h.sock = httplib.FakeSocket(sock, sslSock)
+        h.sock = sslSock
         return h
 
     def prefix_proxy_to_path(self, path, host=None):
-        path = self.protocol + '://' + (host or self.host) + path
+        path = self.protocol + '://' + (host or self.server_name()) + path
         return path
 
     def get_proxy_auth_header(self):
@@ -371,6 +409,7 @@ class AWSAuthConnection:
                     print '-------------------------'
                 elif response.status < 300 or response.status >= 400 or \
                         not location:
+                    self.put_http_connection(host, self.is_secure, connection)
                     return response
                 else:
                     scheme, host, path, params, query, fragment = \
@@ -386,7 +425,7 @@ class AWSAuthConnection:
             except self.http_exceptions, e:
                 boto.log.debug('encountered %s exception, reconnecting' % \
                                   e.__class__.__name__)
-                connection = self.refresh_http_connection(host, self.is_secure)
+                connection = self.new_http_connection(host, self.is_secure)
             time.sleep(2**i)
             i += 1
         # If we made it here, it's because we have exhausted our retries and stil haven't
@@ -403,9 +442,10 @@ class AWSAuthConnection:
                      auth_path=None, sender=None):
         path = self.get_path(path)
         if headers == None:
-            headers = {'User-Agent' : UserAgent}
+            headers = {}
         else:
             headers = headers.copy()
+        headers['User-Agent'] = UserAgent
         if not headers.has_key('Content-Length'):
             headers['Content-Length'] = str(len(data))
         if self.use_proxy:
@@ -430,6 +470,18 @@ class AWSAuthConnection:
         hmac.update(c_string)
         b64_hmac = base64.encodestring(hmac.digest()).strip()
         headers['Authorization'] = "AWS %s:%s" % (self.aws_access_key_id, b64_hmac)
+
+    def close(self):
+        """(Optional) Close any open HTTP connections.  This is non-destructive,
+        and making a new request will open a connection again."""
+
+        boto.log.debug('closing all HTTP connections')
+        self.connection = None  # compat field
+        hosts = list(self._cache.keys())
+        for host in hosts:
+            conn = self._cache[host]
+            conn.close()
+            del self._cache[host]
 
 class AWSQueryConnection(AWSAuthConnection):
 
@@ -518,8 +570,7 @@ class AWSQueryConnection(AWSAuthConnection):
         return t
 
     def make_request(self, action, params=None, path='/', verb='GET'):
-        path = self.get_path(path)
-        headers = {'User-Agent' : UserAgent}
+        headers = {}
         if params == None:
             params = {}
         params['Action'] = action
@@ -527,17 +578,17 @@ class AWSQueryConnection(AWSAuthConnection):
         params['AWSAccessKeyId'] = self.aws_access_key_id
         params['SignatureVersion'] = self.SignatureVersion
         params['Timestamp'] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-        qs, signature = self.get_signature(params, verb, path)
+        qs, signature = self.get_signature(params, verb, self.get_path(path))
         if verb == 'POST':
-            headers['Content-Type'] = 'application/x-www-form-urlencoded'
+            headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
             request_body = qs + '&Signature=' + urllib.quote(signature)
             qs = path
         else:
-            request_body = None
+            request_body = ''
             qs = path + '?' + qs + '&Signature=' + urllib.quote(signature)
-        if self.use_proxy:
-            qs = self.prefix_proxy_to_path(qs)
-        return self._mexe(verb, qs, request_body, headers)
+        return AWSAuthConnection.make_request(self, verb, qs,
+                                              data=request_body,
+                                              headers=headers)
 
     def build_list_params(self, params, items, label):
         if isinstance(items, str):

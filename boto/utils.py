@@ -47,6 +47,13 @@ import logging.handlers
 import boto
 import tempfile
 import smtplib
+import datetime
+from email.MIMEMultipart import MIMEMultipart
+from email.MIMEBase import MIMEBase
+from email.MIMEText import MIMEText
+from email.Utils import formatdate
+from email import Encoders
+
 try:
     import hashlib
     _hashfn = hashlib.sha512
@@ -110,7 +117,9 @@ def canonical_string(method, path, headers, expires=None):
 def merge_meta(headers, metadata):
     final_headers = headers.copy()
     for k in metadata.keys():
-        if k.lower() in ['content-md5', 'content-type', 'date']:
+        if k.lower() in ['cache-control', 'content-md5', 'content-type',
+                         'content-encoding', 'content-disposition',
+                         'date', 'expires']:
             final_headers[k] = metadata[k]
         else:
             final_headers[METADATA_PREFIX + k] = metadata[k]
@@ -125,34 +134,63 @@ def get_aws_metadata(headers):
             del headers[hkey]
     return metadata
 
-def retry_url(url):
+def retry_url(url, retry_on_404=True):
     for i in range(0, 10):
         try:
             req = urllib2.Request(url)
             resp = urllib2.urlopen(req)
             return resp.read()
+        except urllib2.HTTPError, e:
+            # in 2.6 you use getcode(), in 2.5 and earlier you use code
+            if hasattr(e, 'getcode'):
+                code = e.getcode()
+            else:
+                code = e.code
+            if code == 404 and not retry_on_404:
+                return ''
         except:
-            boto.log.exception('Caught exception reading instance data')
-            time.sleep(2**i)
+            pass
+        boto.log.exception('Caught exception reading instance data')
+        time.sleep(2**i)
     boto.log.error('Unable to read instance data, giving up')
     return ''
-    
-def get_instance_metadata(version='latest'):
-    metadata = {}
-    url = 'http://169.254.169.254/%s/meta-data/' % version
+
+def _get_instance_metadata(url):
+    d = {}
     data = retry_url(url)
     if data:
-        md_fields = data.split('\n')
-        for md in md_fields:
-            val = retry_url(url + md)
-            if val.find('\n') > 0:
-                val = val.split('\n')
-            metadata[md] = val
-    return metadata
+        fields = data.split('\n')
+        for field in fields:
+            if field.endswith('/'):
+                d[field[0:-1]] = _get_instance_metadata(url + field)
+            else:
+                p = field.find('=')
+                if p > 0:
+                    key = field[p+1:]
+                    resource = field[0:p] + '/openssh-key'
+                else:
+                    key = resource = field
+                val = retry_url(url + resource)
+                p = val.find('\n')
+                if p > 0:
+                    val = val.split('\n')
+                d[key] = val
+    return d
+
+def get_instance_metadata(version='latest'):
+    """
+    Returns the instance metadata as a nested Python dictionary.
+    Simple values (e.g. local_hostname, hostname, etc.) will be
+    stored as string values.  Values such as ancestor-ami-ids will
+    be stored in the dict as a list of string values.  More complex
+    fields such as public-keys and will be stored as nested dicts.
+    """
+    url = 'http://169.254.169.254/%s/meta-data/' % version
+    return _get_instance_metadata(url)
 
 def get_instance_userdata(version='latest', sep=None):
-    url = 'http://169.254.169.254/%s/user-data/' % version
-    user_data = retry_url(url)
+    url = 'http://169.254.169.254/%s/user-data' % version
+    user_data = retry_url(url, retry_on_404=False)
     if user_data:
         if sep:
             l = user_data.split(sep)
@@ -211,7 +249,7 @@ def fetch_file(uri, file=None, username=None, password=None):
     try:
         working_dir = boto.config.get("General", "working_dir")
         if uri.startswith('s3://'):
-            bucket_name, key_name = uri[len('s3://'):].split('/')
+            bucket_name, key_name = uri[len('s3://'):].split('/', 1)
             c = boto.connect_s3()
             bucket = c.get_bucket(bucket_name)
             key = bucket.get_key(key_name)
@@ -462,29 +500,61 @@ class Password(object):
         return str(self.str)
    
     def __eq__(self, other):
+        if other == None:
+            return False
         return str(_hashfn(other).hexdigest()) == str(self.str)
 
     def __len__(self):
-        return len(self.str)
+        if self.str:
+            return len(self.str)
+        else:
+            return 0
 
-def notify(subject, body=''):
-    subject = "[%s] %s" % (boto.config.get_value("Instance", "instance-id"), subject)
-    to_string = boto.config.get_value('Notification', 'smtp_to', None)
+def notify(subject, body=None, html_body=None, to_string=None, attachments=[], append_instance_id=True):
+    if append_instance_id:
+        subject = "[%s] %s" % (boto.config.get_value("Instance", "instance-id"), subject)
+    if not to_string:
+        to_string = boto.config.get_value('Notification', 'smtp_to', None)
     if to_string:
         try:
             from_string = boto.config.get_value('Notification', 'smtp_from', 'boto')
-            msg = "From: %s\n" % from_string
-            msg += "To: %s\n" % to_string
-            msg += "Subject: %s\n\n" % subject
-            msg += body
+            msg = MIMEMultipart()
+            msg['From'] = from_string
+            msg['To'] = to_string
+            msg['Date'] = formatdate(localtime=True)
+            msg['Subject'] = subject
+        
+            if body:
+                msg.attach(MIMEText(body))
+
+            if html_body:
+                part = MIMEBase('text', 'html')
+                part.set_payload(html_body)
+                Encoders.encode_base64(part)
+                msg.attach(part)
+
+            for part in attachments:
+                msg.attach(part)
+
             smtp_host = boto.config.get_value('Notification', 'smtp_host', 'localhost')
-            server = smtplib.SMTP(smtp_host)
+
+            # Alternate port support
+            if boto.config.get_value("Notification", "smtp_port"):
+                server = smtplib.SMTP(smtp_host, int(boto.config.get_value("Notification", "smtp_port")))
+            else:
+                server = smtplib.SMTP(smtp_host)
+
+            # TLS support
+            if boto.config.getbool("Notification", "smtp_tls"):
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
             smtp_user = boto.config.get_value('Notification', 'smtp_user', '')
             smtp_pass = boto.config.get_value('Notification', 'smtp_pass', '')
             if smtp_user:
                 server.login(smtp_user, smtp_pass)
-            server.sendmail(from_string, to_string, msg)
+            server.sendmail(from_string, to_string, msg.as_string())
             server.quit()
         except:
-            boto.log.error('notify failed')
+            boto.log.exception('notify failed')
 

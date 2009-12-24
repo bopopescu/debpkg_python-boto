@@ -19,7 +19,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 #
-import StringIO, os
+import StringIO, os, re
 import ConfigParser
 import boto
 
@@ -30,6 +30,8 @@ if 'HOME' in os.environ:
     BotoConfigLocations.append(UserConfigPath)
 else:
     UserConfigPath = None
+if 'BOTO_CONFIG' in os.environ:
+    BotoConfigLocations.append(os.path.expanduser(os.environ['BOTO_CONFIG']))
 
 class Config(ConfigParser.SafeConfigParser):
 
@@ -38,11 +40,33 @@ class Config(ConfigParser.SafeConfigParser):
                                                       'debug' : '0'})
         if do_load:
             if path:
-                self.read(path)
+                self.load_from_path(path)
             elif fp:
                 self.readfp(fp)
             else:
                 self.read(BotoConfigLocations)
+            if "AWS_CREDENTIAL_FILE" in os.environ:
+                self.load_credential_file(os.path.expanduser(os.environ['AWS_CREDENTIAL_FILE']))
+
+    def load_credential_file(self, path):
+        """Load a credential file as is setup like the Java utilities"""
+        config = ConfigParser.ConfigParser()
+        c_data = StringIO.StringIO()
+        c_data.write("[Credentials]\n")
+        for line in open(path, "r").readlines():
+            c_data.write(line.replace("AWSAccessKeyId", "aws_access_key_id").replace("AWSSecretKey", "aws_secret_access_key"))
+        c_data.seek(0)
+        self.readfp(c_data)
+
+    def load_from_path(self, path):
+        file = open(path)
+        for line in file.readlines():
+            match = re.match("^#import[\s\t]*([^\s^\t]*)[\s\t]*$", line)
+            if match:
+                extended_file = match.group(1)
+                (dir, file) = os.path.split(path)
+                self.load_from_path(os.path.join(dir, extended_file))
+        self.read(path)
 
     def save_option(self, path, section, option, value):
         """

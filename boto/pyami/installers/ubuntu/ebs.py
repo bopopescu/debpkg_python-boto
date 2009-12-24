@@ -24,16 +24,27 @@ Automated installer to attach, format and mount an EBS volume.
 This installer assumes that you want the volume formatted as
 an XFS file system.  To drive this installer, you need the
 following section in the boto config passed to the new instance.
+You also need to install dateutil by listing python-dateutil
+in the list of packages to be installed in the Pyami seciont
+of your boto config file.
+
 If there is already a device mounted at the specified mount point,
 the installer assumes that it is the ephemeral drive and unmounts
 it, remounts it as /tmp and chmods it to 777.
 
-[EBS]
-volume_id = <the id of the EBS volume, should look like vol-xxxxxxxx>
-device = <the linux device the EBS volume should be mounted on
-mount_point = <directory to mount device, defaults to /ebs>
+Config file section::
+
+    [EBS]
+    volume_id = <the id of the EBS volume, should look like vol-xxxxxxxx>
+    logical_volume_name = <the name of the logical volume that contaings 
+        a reference to the physical volume to be mounted. If this parameter
+        is supplied, it overrides the volume_id setting.>
+    device = <the linux device the EBS volume should be mounted on>
+    mount_point = <directory to mount device, defaults to /ebs>
+
 """
 import boto
+from boto.manage.volume import Volume
 import os, time
 from boto.pyami.installers.ubuntu.installer import Installer
 from string import Template
@@ -64,6 +75,13 @@ if __name__ == "__main__":
     b = Backup()
     b.main()
 """
+
+BackupCleanupScript= """#!/usr/bin/env python
+# Cleans Backups of EBS volumes
+
+for v in Volume.all():
+        v.trim_snapshot(True)
+"""
     
 class EBSInstaller(Installer):
     """
@@ -75,10 +93,22 @@ class EBSInstaller(Installer):
         self.instance_id = boto.config.get('Instance', 'instance-id')
         self.device = boto.config.get('EBS', 'device', '/dev/sdp')
         self.volume_id = boto.config.get('EBS', 'volume_id')
+        self.logical_volume_name = boto.config.get('EBS', 'logical_volume_name')
         self.mount_point = boto.config.get('EBS', 'mount_point', '/ebs')
 
     def attach(self):
         ec2 = boto.connect_ec2()
+        if self.logical_volume_name:
+            # if a logical volume was specified, override the specified volume_id
+            # (if there was one) with the current AWS volume for the logical volume:
+            logical_volume = Volume.find(name = self.logical_volume_name).next()
+            self.volume_id = logical_volume._volume_id
+        volume = ec2.get_all_volumes([self.volume_id])[0]
+        # wait for the volume to be available. The volume may still be being created
+        # from a snapshot.
+        while volume.update() != 'available':
+            boto.log.info('Volume %s not yet available. Current status = %s.' % (volume.id, volume.status))
+            time.sleep(5)
         ec2.attach_volume(self.volume_id, self.instance_id, self.device)
         # now wait for the volume device to appear
         while not os.path.exists(self.device):
@@ -99,6 +129,12 @@ class EBSInstaller(Installer):
         fp.write(s)
         fp.close()
         self.run('chmod +x /usr/local/bin/ebs_backup')
+
+    def create_backup_cleanup_script(self):
+        fp = open('/usr/local/bin/ebs_backup_cleanup', 'w')
+        fp.write(BackupCleanupScript)
+        fp.close()
+        self.run('chmod +x /usr/local/bin/ebs_backup_cleanup')
 
     def handle_mount_point(self):
         boto.log.info('handle_mount_point')
@@ -146,7 +182,16 @@ class EBSInstaller(Installer):
         self.create_backup_script()
 
         # Set up the backup script
-        self.add_cron("ebs_backup", "/usr/local/bin/ebs_backup", minute="0", hour="4,16")
+        minute = boto.config.get('EBS', 'backup_cron_minute', '0')
+        hour = boto.config.get('EBS', 'backup_cron_hour', '4,16')
+        self.add_cron("ebs_backup", "/usr/local/bin/ebs_backup", minute=minute, hour=hour)
+
+        # Set up the backup cleanup script
+        minute = boto.config.get('EBS', 'backup_cleanup_cron_minute')
+        hour = boto.config.get('EBS', 'backup_cleanup_cron_hour')
+        if (minute != None) and (hour != None):
+            self.create_backup_cleanup_script();
+            self.add_cron("ebs_backup_cleanup", "/usr/local/bin/ebs_backup_cleanup", minute=minute, hour=hour)
 
         # Set up the fstab
         self.update_fstab()

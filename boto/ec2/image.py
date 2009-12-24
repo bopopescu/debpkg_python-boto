@@ -20,7 +20,17 @@
 # IN THE SOFTWARE.
 
 from boto.ec2.ec2object import EC2Object
+from boto.ec2.blockdevicemapping import BlockDeviceMapping
 
+class ProductCodes(list):
+
+    def startElement(self, name, attrs, connection):
+        pass
+
+    def endElement(self, name, value, connection):
+        if name == 'productCode':
+            self.append(value)
+    
 class Image(EC2Object):
     """
     Represents an EC2 Image
@@ -32,15 +42,31 @@ class Image(EC2Object):
         self.location = None
         self.state = None
         self.ownerId = None
+        self.owner_alias = None
         self.is_public = False
         self.architecture = None
+        self.platform = None
         self.type = None
         self.kernel_id = None
         self.ramdisk_id = None
-        self.product_codes = []
+        self.name = None
+        self.description = None
+        self.product_codes = ProductCodes()
+        self.block_device_mapping = None
+        self.root_device_type = None
+        self.root_device_name = None
 
     def __repr__(self):
         return 'Image:%s' % self.id
+
+    def startElement(self, name, attrs, connection):
+        if name == 'blockDeviceMapping':
+            self.block_device_mapping = BlockDeviceMapping()
+            return self.block_device_mapping
+        elif name == 'productCodes':
+            return self.product_codes
+        else:
+            return None
 
     def endElement(self, name, value, connection):
         if name == 'imageId':
@@ -51,12 +77,6 @@ class Image(EC2Object):
             self.state = value
         elif name == 'imageOwnerId':
             self.ownerId = value
-        elif name == 'imageType':
-            self.type = value
-        elif name == 'kernelId':
-            self.kernel_id = value
-        elif name == 'ramdiskId':
-            self.ramdisk_id = value
         elif name == 'isPublic':
             if value == 'false':
                 self.is_public = False
@@ -69,45 +89,82 @@ class Image(EC2Object):
                         self.id
                     )
                 )
-        elif name == 'productCode':
-            self.product_codes.append(value)
+        elif name == 'architecture':
+            self.architecture = value
+        elif name == 'imageType':
+            self.type = value
+        elif name == 'kernelId':
+            self.kernel_id = value
+        elif name == 'ramdiskId':
+            self.ramdisk_id = value
+        elif name == 'imageOwnerAlias':
+            self.owner_alias = value
+        elif name == 'platform':
+            self.platform = value
+        elif name == 'name':
+            self.name = value
+        elif name == 'description':
+            self.description = value
+        elif name == 'rootDeviceType':
+            self.root_device_type = value
+        elif name == 'rootDeviceName':
+            self.root_device_name = value
         else:
             setattr(self, name, value)
 
     def run(self, min_count=1, max_count=1, key_name=None,
             security_groups=None, user_data=None,
-            addressing_type=None, instance_type='m1.small', placement=None):
+            addressing_type=None, instance_type='m1.small', placement=None,
+            kernel_id=None, ramdisk_id=None,
+            monitoring_enabled=False, subnet_id=None):
         """
         Runs this instance.
         
-        @type min_count: int
-        @param min_count: The minimum number of instances to start
+        :type min_count: int
+        :param min_count: The minimum number of instances to start
         
-        @type max_count: int
-        @param max_count: The maximum number of instances to start
+        :type max_count: int
+        :param max_count: The maximum number of instances to start
         
-        @type key_name: string
-        @param key_name: The keypair to run this instance with.
+        :type key_name: string
+        :param key_name: The keypair to run this instance with.
         
-        @type security_groups: 
-        @param security_groups:
+        :type security_groups: 
+        :param security_groups:
         
-        @type user_data: 
-        @param user_data:
+        :type user_data: 
+        :param user_data:
         
-        @type addressing_type: 
-        @param daddressing_type:
+        :type addressing_type: 
+        :param daddressing_type:
         
-        @type instance_type: string
-        @param instance_type: The type of instance to run (m1.small, m1.large, m1.xlarge)
+        :type instance_type: string
+        :param instance_type: The type of instance to run (m1.small, m1.large, m1.xlarge)
         
-        @type placement: 
-        @param placement: 
+        :type placement: 
+        :param placement:
+
+        :type kernel_id: string
+        :param kernel_id: The ID of the kernel with which to launch the instances
+        
+        :type ramdisk_id: string
+        :param ramdisk_id: The ID of the RAM disk with which to launch the instances
+        
+        :type monitoring_enabled: bool
+        :param monitoring_enabled: Enable CloudWatch monitoring on the instance.
+        
+        :type subnet_id: string
+        :param subnet_id: The subnet ID within which to launch the instances for VPC.
+        
+        :rtype: Reservation
+        :return: The :class:`boto.ec2.instance.Reservation` associated with the request for machines
         """
         return self.connection.run_instances(self.id, min_count, max_count,
                                              key_name, security_groups,
                                              user_data, addressing_type,
-                                             instance_type, placement)
+                                             instance_type, placement,
+                                             kernel_id, ramdisk_id,
+                                             monitoring_enabled, subnet_id)
 
     def deregister(self):
         return self.connection.deregister_image(self.id)
@@ -152,7 +209,11 @@ class ImageAttribute:
         self.attrs = {}
 
     def startElement(self, name, attrs, connection):
-        return None
+        if name == 'blockDeviceMapping':
+            self.attrs['block_device_mapping'] = BlockDeviceMapping()
+            return self.attrs['block_device_mapping']
+        else:
+            return None
 
     def endElement(self, name, value, connection):
         if name == 'launchPermission':
