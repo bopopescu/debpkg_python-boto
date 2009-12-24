@@ -49,6 +49,7 @@ class SDBConverter:
         self.type_map = { bool : (self.encode_bool, self.decode_bool),
                           int : (self.encode_int, self.decode_int),
                           long : (self.encode_long, self.decode_long),
+                          float : (self.encode_float, self.decode_float),
                           Model : (self.encode_reference, self.decode_reference),
                           Key : (self.encode_reference, self.decode_reference),
                           datetime : (self.encode_datetime, self.decode_datetime),
@@ -163,7 +164,58 @@ class SDBConverter:
         else:
             return False
 
+    def encode_float(self, value):
+        """
+        See http://tools.ietf.org/html/draft-wood-ldapext-float-00.
+        """
+        s = '%e' % value
+        l = s.split('e')
+        mantissa = l[0].ljust(18, '0')
+        exponent = l[1]
+        if value == 0.0:
+            case = '3'
+            exponent = '000'
+        elif mantissa[0] != '-' and exponent[0] == '+':
+            case = '5'
+            exponent = exponent[1:].rjust(3, '0')
+        elif mantissa[0] != '-' and exponent[0] == '-':
+            case = '4'
+            exponent = 999 + int(exponent)
+            exponent = '%03d' % exponent
+        elif mantissa[0] == '-' and exponent[0] == '-':
+            case = '2'
+            mantissa = '%f' % (10 + float(mantissa))
+            mantissa = mantissa.ljust(18, '0')
+            exponent = exponent[1:].rjust(3, '0')
+        else:
+            case = '1'
+            mantissa = '%f' % (10 + float(mantissa))
+            mantissa = mantissa.ljust(18, '0')
+            exponent = 999 - int(exponent)
+            exponent = '%03d' % exponent
+        return '%s %s %s' % (case, exponent, mantissa)
+
+    def decode_float(self, value):
+        case = value[0]
+        exponent = value[2:5]
+        mantissa = value[6:]
+        if case == '3':
+            return 0.0
+        elif case == '5':
+            pass
+        elif case == '4':
+            exponent = '%03d' % (int(exponent) - 999)
+        elif case == '2':
+            mantissa = '%f' % (float(mantissa) - 10)
+            exponent = '-' + exponent
+        else:
+            mantissa = '%f' % (float(mantissa) - 10)
+            exponent = '%03d' % abs((int(exponent) - 999))
+        return float(mantissa + 'e' + exponent)
+
     def encode_datetime(self, value):
+        if isinstance(value, str) or isinstance(value, unicode):
+            return value
         return value.strftime(ISO8601)
 
     def decode_datetime(self, value):
@@ -183,10 +235,7 @@ class SDBConverter:
     def decode_reference(self, value):
         if not value:
             return None
-        try:
-            return self.manager.get_object_from_id(value)
-        except:
-            return None
+        return value
 
     def encode_blob(self, value):
         if not value:
@@ -205,7 +254,8 @@ class SDBConverter:
             else:
                 raise SDBPersistenceError("Invalid Blob ID: %s" % value.id)
 
-        key.set_contents_from_string(value.value)
+        if value.value != None:
+            key.set_contents_from_string(value.value)
         return value.id
 
 
@@ -245,10 +295,7 @@ class SDBManager(object):
     def _connect(self):
         self.sdb = boto.connect_sdb(aws_access_key_id=self.db_user,
                                     aws_secret_access_key=self.db_passwd,
-                                    port=self.db_port,
-                                    host=self.db_host,
-                                    is_secure=self.enable_ssl
-                                    )
+                                    is_secure=self.enable_ssl)
         # This assumes that the domain has already been created
         # It's much more efficient to do it this way rather than
         # having this make a roundtrip each time to validate.
@@ -264,6 +311,10 @@ class SDBManager(object):
                 yield obj
             
     def encode_value(self, prop, value):
+        if value == None:
+            return None
+        if not prop:
+            return str(value)
         return self.converter.encode_prop(prop, value)
 
     def decode_value(self, prop, value):
@@ -319,10 +370,13 @@ class SDBManager(object):
     def get_object_from_id(self, id):
         return self.get_object(None, id)
 
-    def query(self, cls, filters, limit=None, order_by=None):
-        query = "select * from `%s` %s" % (self.domain.name, self._build_filter_part(cls, filters, order_by))
-        rs = self.domain.select(query)
-        return self._object_lister(cls, rs)
+    def query(self, query):
+        query_str = "select * from `%s` %s" % (self.domain.name, self._build_filter_part(query.model_class, query.filters, query.sort_by))
+        if query.limit:
+            query_str += " limit %s" % query.limit
+        rs = self.domain.select(query_str, max_items=query.limit, next_token = query.next_token)
+        query.rs = rs
+        return self._object_lister(query.model_class, rs)
 
     def count(self, cls, filters):
         """
@@ -348,11 +402,9 @@ class SDBManager(object):
                 order_by_method = "asc";
 
         for filter in filters:
-            (name, op) = filter[0].strip().split(" ")
+            (name, op) = filter[0].strip().split(" ", 1)
             value = filter[1]
             property = cls.find_property(name)
-            if not property:
-                raise AttributeError("Unknown Property: %s" % name)
             if name == order_by:
                 order_by_filtered = True
             if types.TypeType(value) == types.ListType:
@@ -368,6 +420,8 @@ class SDBManager(object):
             else:
                 if op == 'is' and value == None:
                     query_parts.append("`%s` is null" % name)
+                elif op == 'is not' and value == None:
+                    query_parts.append("`%s` is not null" % name)
                 else:
                     val = self.encode_value(property, value)
                     if isinstance(val, list):

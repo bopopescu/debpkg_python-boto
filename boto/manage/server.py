@@ -25,114 +25,68 @@ High-level abstraction of an EC2 server
 from __future__ import with_statement
 import boto.ec2
 from boto.mashups.iobject import IObject
-from boto.pyami.config import BotoConfigPath
-from boto.sdb.db.model import Model, ModelMeta
+from boto.pyami.config import BotoConfigPath, Config
+from boto.sdb.db.model import Model
 from boto.sdb.db.property import *
 from boto.manage import propget
-import cmdshell
-import os, time
-import StringIO
+from boto.ec2.zone import Zone
+from boto.ec2.keypair import KeyPair
+import os, time, StringIO
 from contextlib import closing
+from boto.exception import EC2ResponseError
 
-class ServerMeta(ModelMeta):
-
-    def __init__(cls, name, bases, dict):
-        super(ServerMeta, cls).__init__(name, bases, dict)
-        installers = []
-        for base in bases:
-            l = []
-            for key in base.__dict__:
-                val = base.__dict__[key]
-                if isinstance(val, Installer):
-                    print 'Found %s_%s in %s' % (val.name, val.seq_no, base.__name__)
-                    l.append(val)
-            l.sort()
-            installers.extend(l)
-        for i in installers:
-            print i.name
-        
-class Installer(object):
-
-    def __init__ (self, seq_no, fn):
-        self.instance_id = boto.config.get('Instance', 'instance-id', None)
-        self.name = fn.__name__
-        self.seq_no = seq_no
-        self.fn = fn
-
-    def __call__ (self, *args, **kws):
-        if self.instance_id == self.obj.instance_id:
-            ret_val = self.fn(self.obj, *args, **kws)
-            return ret_val
-        else:
-            raise NotImplementedError, '%s is only available on the EC2 instance' % self.fn.__name__
-
-    def __cmp__(self, other):
-        return cmp(self.seq_no, other.seq_no)
-
-    def __get__(descr, inst, instCls=None):
-        descr.obj = inst
-        return descr
-
-def installer(seq_no):
-    ret_val = lambda func: Installer(seq_no, func)
-    return ret_val
-
-InstanceTypes = ['m1.small', 'm1.large', 'm1.xlarge', 'c1.medium', 'c1.xlarge']
+InstanceTypes = ['m1.small', 'm1.large', 'm1.xlarge',
+                 'c1.medium', 'c1.xlarge',
+                 'm2.2xlarge', 'm2.4xlarge']
 
 class Bundler(object):
 
-    def __init__(self, server):
+    def __init__(self, server, uname='root'):
+        from boto.manage.cmdshell import SSHClient
         self.server = server
-        self.ssh_client = SSHClient(server)
+        self.uname = uname
+        self.ssh_client = SSHClient(server, uname=uname)
 
-    def bundle_image(self, prefix, key_file, cert_file, size, ssh_key):
-        print 'bundling image...'
+    def copy_x509(self, key_file, cert_file):
         print '\tcopying cert and pk over to /mnt directory on server'
         sftp_client = self.ssh_client.open_sftp()
         path, name = os.path.split(key_file)
-        remote_key_file = '/mnt/%s' % name
-        self.put_file(key_file, remote_key_file)
+        self.remote_key_file = '/mnt/%s' % name
+        self.ssh_client.put_file(key_file, self.remote_key_file)
         path, name = os.path.split(cert_file)
-        remote_cert_file = '/mnt/%s' % name
-        self.put_file(cert_file, remote_cert_file)
-        print '\tdeleting %s' % BotoConfigPath
-        # delete the metadata.ini file if it exists
-        try:
-            sftp_client.remove(BotoConfigPath)
-        except:
-            pass
-        command = 'ec2-bundle-vol '
-        command += '-c %s -k %s ' % (remote_cert_file, remote_key_file)
-        command += '-u %s ' % self._reservation.owner_id
+        self.remote_cert_file = '/mnt/%s' % name
+        self.ssh_client.put_file(cert_file, self.remote_cert_file)
+        print '...complete!'
+
+    def bundle_image(self, prefix, size, ssh_key):
+        command = ""
+        if self.uname != 'root':
+            command = "sudo "
+        command += 'ec2-bundle-vol '
+        command += '-c %s -k %s ' % (self.remote_cert_file, self.remote_key_file)
+        command += '-u %s ' % self.server._reservation.owner_id
         command += '-p %s ' % prefix
         command += '-s %d ' % size
         command += '-d /mnt '
-        if self.instance.instance_type == 'm1.small' or self.instance_type == 'c1.medium':
+        if self.server.instance_type == 'm1.small' or self.server.instance_type == 'c1.medium':
             command += '-r i386'
         else:
             command += '-r x86_64'
-        print '\t%s' % command
-        t = ssh_client.exec_command(command)
-        response = t[1].read()
-        print '\t%s' % response
-        print '\t%s' % t[2].read()
-        print '...complete!'
+        return command
 
     def upload_bundle(self, bucket, prefix, ssh_key):
-        print 'uploading bundle...'
-        command = 'ec2-upload-bundle '
+        command = ""
+        if self.uname != 'root':
+            command = "sudo "
+        command += 'ec2-upload-bundle '
         command += '-m /mnt/%s.manifest.xml ' % prefix
         command += '-b %s ' % bucket
         command += '-a %s ' % self.server.ec2.aws_access_key_id
         command += '-s %s ' % self.server.ec2.aws_secret_access_key
-        print '\t%s' % command
-        t = self.ssh_client.exec_command(command)
-        response = t[1].read()
-        print '\t%s' % response
-        print '\t%s' % t[2].read()
-        print '...complete!'
+        return command
 
-    def bundle(self, bucket=None, prefix=None, key_file=None, cert_file=None, size=None, ssh_key=None):
+    def bundle(self, bucket=None, prefix=None, key_file=None, cert_file=None,
+               size=None, ssh_key=None, fp=None, clear_history=True):
         iobject = IObject()
         if not bucket:
             bucket = iobject.get_string('Name of S3 bucket')
@@ -145,9 +99,27 @@ class Bundler(object):
         if not size:
             size = iobject.get_int('Size (in MB) of bundled image')
         if not ssh_key:
-            ssh_key = iobject.get_filename('Path to SSH Private Key')
-        self.bundle_image(prefix, key_file, cert_file, size, ssh_key)
-        self.upload_bundle(bucket, prefix, ssh_key)
+            ssh_key = self.server.get_ssh_key_file()
+        self.copy_x509(key_file, cert_file)
+        if not fp:
+            fp = StringIO.StringIO()
+        fp.write('mv %s /mnt/boto.cfg; ' % BotoConfigPath)
+        fp.write('mv /root/.ssh/authorized_keys /mnt/authorized_keys; ')
+        if clear_history:
+            fp.write('history -c; ')
+        fp.write(self.bundle_image(prefix, size, ssh_key))
+        fp.write('; ')
+        fp.write(self.upload_bundle(bucket, prefix, ssh_key))
+        fp.write('; ')
+        fp.write('mv /mnt/boto.cfg %s; ' % BotoConfigPath)
+        fp.write('mv /mnt/authorized_keys /root/.ssh/authorized_keys\n')
+        command = fp.getvalue()
+        print 'running the following command on the remote server:'
+        print command
+        t = self.ssh_client.run(command)
+        print '\t%s' % t[0]
+        print '\t%s' % t[1]
+        print '...complete!'
         print 'registering image...'
         self.image_id = self.server.ec2.register_image('%s/%s.manifest.xml' % (bucket, prefix))
         return self.image_id
@@ -163,7 +135,11 @@ class CommandLineGetter(object):
         return my_amis
     
     def get_region(self, params):
-        if not params.get('region', None):
+        region = params.get('region', None)
+        if isinstance(region, str) or isinstance(region, unicode):
+            region = boto.ec2.get_region(region)
+            params['region'] = region
+        if not region:
             prop = self.cls.find_property('region_name')
             params['region'] = propget.get(prop, choices=boto.ec2.regions)
 
@@ -195,22 +171,43 @@ class CommandLineGetter(object):
             params['zone'] = propget.get(prop)
             
     def get_ami_id(self, params):
+        ami = params.get('ami', None)
+        if isinstance(ami, str) or isinstance(ami, unicode):
+            ami_list = self.get_ami_list()
+            for l,a in ami_list:
+                if a.id == ami:
+                    ami = a
+                    params['ami'] = a
         if not params.get('ami', None):
             prop = StringProperty(name='ami', verbose_name='AMI',
                                   choices=self.get_ami_list)
             params['ami'] = propget.get(prop)
 
     def get_group(self, params):
-        if not params.get('groups', None):
-            prop = StringProperty(name='groups', verbose_name='EC2 Security Group',
+        group = params.get('group', None)
+        if isinstance(group, str) or isinstance(group, unicode):
+            group_list = self.ec2.get_all_security_groups()
+            for g in group_list:
+                if g.name == group:
+                    group = g
+                    params['group'] = g
+        if not group:
+            prop = StringProperty(name='group', verbose_name='EC2 Security Group',
                                   choices=self.ec2.get_all_security_groups)
-            params['groups'] = [propget.get(prop)]
+            params['group'] = propget.get(prop)
 
     def get_key(self, params):
-        if not params.get('keypair', None):
+        keypair = params.get('keypair', None)
+        if isinstance(keypair, str) or isinstance(keypair, unicode):
+            key_list = self.ec2.get_all_key_pairs()
+            for k in key_list:
+                if k.name == keypair:
+                    keypair = k.name
+                    params['keypair'] = k.name
+        if not keypair:
             prop = StringProperty(name='keypair', verbose_name='EC2 KeyPair',
                                   choices=self.ec2.get_all_key_pairs)
-            params['keypair'] = propget.get(prop)
+            params['keypair'] = propget.get(prop).name
 
     def get(self, cls, params):
         self.cls = cls
@@ -227,8 +224,6 @@ class CommandLineGetter(object):
 
 class Server(Model):
 
-    __metaclass__ = ServerMeta
-    
     #
     # The properties of this object consists of real properties for data that
     # is not already stored in EC2 somewhere (e.g. name, description) plus
@@ -245,54 +240,100 @@ class Server(Model):
     zone = CalculatedProperty(verbose_name="Availability Zone Name", calculated_type=str, use_method=True)
     hostname = CalculatedProperty(verbose_name="Public DNS Name", calculated_type=str, use_method=True)
     private_hostname = CalculatedProperty(verbose_name="Private DNS Name", calculated_type=str, use_method=True)
-    groups = CalculatedProperty(verbose_name="Security Group Name", calculated_type=list, use_method=True)
+    groups = CalculatedProperty(verbose_name="Security Groups", calculated_type=list, use_method=True)
+    security_group = CalculatedProperty(verbose_name="Primary Security Group Name", calculated_type=str, use_method=True)
     key_name = CalculatedProperty(verbose_name="Key Name", calculated_type=str, use_method=True)
     instance_type = CalculatedProperty(verbose_name="Instance Type", calculated_type=str, use_method=True)
     status = CalculatedProperty(verbose_name="Current Status", calculated_type=str, use_method=True)
     launch_time = CalculatedProperty(verbose_name="Server Launch Time", calculated_type=str, use_method=True)
-    console_output = CalculatedProperty(verbose_name="Console Output", calculated_type=str, use_method=True)
+    console_output = CalculatedProperty(verbose_name="Console Output", calculated_type=file, use_method=True)
 
     packages = []
     plugins = []
 
     @classmethod
-    def make_config(cls, aws_access_key_id, aws_secret_access_key):
-        cfg = StringIO.StringIO()
-        cfg.write('[Credentials]\n')
-        cfg.write('aws_access_key_id = %s\n' % aws_access_key_id)
-        cfg.write('aws_secret_access_key = %s\n\n' % aws_secret_access_key)
-        cfg.write('[DB_Server]\n')
-        cfg.write('db_type = SimpleDB\n')
-        cfg.write('db_name = %s\n' % cls._manager.domain.name)
-        return cfg.getvalue()
+    def add_credentials(cls, cfg, aws_access_key_id, aws_secret_access_key):
+        if not cfg.has_section('Credentials'):
+            cfg.add_section('Credentials')
+        cfg.set('Credentials', 'aws_access_key_id', aws_access_key_id)
+        cfg.set('Credentials', 'aws_secret_access_key', aws_secret_access_key)
+        if not cfg.has_section('DB_Server'):
+            cfg.add_section('DB_Server')
+        cfg.set('DB_Server', 'db_type', 'SimpleDB')
+        cfg.set('DB_Server', 'db_name', cls._manager.domain.name)
 
+    '''
+    Create a new instance based on the specified configuration file or the specified
+    configuration and the passed in parameters.
+    
+    If the config_file argument is not None, the configuration is read from there. 
+    Otherwise, the cfg argument is used.
+
+    The config file may include other config files with a #import reference. The included
+    config files must reside in the same directory as the specified file. 
+    
+    The logical_volume argument, if supplied, will be used to get the current physical 
+    volume ID and use that as an override of the value specified in the config file. This 
+    may be useful for debugging purposes when you want to debug with a production config 
+    file but a test Volume. 
+    
+    The dictionary argument may be used to override any EC2 configuration values in the 
+    config file. 
+    '''
     @classmethod
-    def create(cls, **params):
+    def create(cls, config_file=None, logical_volume = None, cfg = None, **params):
+        if config_file:
+            cfg = Config(path=config_file)
+        if cfg.has_section('EC2'):
+            # include any EC2 configuration values that aren't specified in params:
+            for option in cfg.options('EC2'):
+                if option not in params:
+                    params[option] = cfg.get('EC2', option)
         getter = CommandLineGetter()
         getter.get(cls, params)
         region = params.get('region')
         ec2 = region.connect()
-        cfg = cls.make_config(ec2.aws_access_key_id, ec2.aws_secret_access_key)
+        cls.add_credentials(cfg, ec2.aws_access_key_id, ec2.aws_secret_access_key)
         ami = params.get('ami')
         kp = params.get('keypair')
-        groups = [g.name for g in params.get('groups')]
+        group = params.get('group')
         zone = params.get('zone')
+        # deal with possibly passed in logical volume:
+        if logical_volume != None:
+           cfg.set('EBS', 'logical_volume_name', logical_volume.name) 
+        cfg_fp = StringIO.StringIO()
+        cfg.write(cfg_fp)
+        # deal with the possibility that zone and/or keypair are strings read from the config file:
+        if isinstance(zone, Zone):
+            zone = zone.name
+        if isinstance(kp, KeyPair):
+            kp = kp.name
         reservation = ami.run(min_count=1,
                               max_count=params.get('quantity', 1),
-                              key_name=kp.name,
-                              security_groups=groups,
+                              key_name=kp,
+                              security_groups=[group],
                               instance_type=params.get('instance_type'),
-                              placement = zone.name,
-                              user_data = cfg)
+                              placement = zone,
+                              user_data = cfg_fp.getvalue())
         l = []
         i = 0
-        for instance in reservation.instances:
+        elastic_ip = params.get('elastic_ip')
+        instances = reservation.instances
+        if elastic_ip != None and instances.__len__() > 0:
+            instance = instances[0]
+            while instance.update() != 'running':
+                time.sleep(1)
+            instance.use_ip(elastic_ip)
+            print 'set the elastic IP of the first instance to %s' % elastic_ip
+        for instance in instances:
             s = cls()
             s.ec2 = ec2
             s.name = params.get('name') + '' if i==0 else str(i)
             s.description = params.get('description')
             s.region_name = region.name
             s.instance_id = instance.id
+            if elastic_ip and i == 0:
+                s.elastic_ip = elastic_ip
             s.put()
             l.append(s)
             i += 1
@@ -322,6 +363,7 @@ class Server(Model):
                 return s
         return None
 
+    @classmethod
     def create_from_current_instances(cls):
         servers = []
         regions = boto.ec2.regions()
@@ -362,12 +404,15 @@ class Server(Model):
                     if region.name == self.region_name:
                         self.ec2 = region.connect()
                         if self.instance_id and not self._instance:
-                            rs = self.ec2.get_all_instances([self.instance_id])
-                            if len(rs) >= 1:
-                                for instance in rs[0].instances:
-                                    if instance.id == self.instance_id:
-                                        self._reservation = rs[0]
-                                        self._instance = instance
+                            try:
+                                rs = self.ec2.get_all_instances([self.instance_id])
+                                if len(rs) >= 1:
+                                    for instance in rs[0].instances:
+                                        if instance.id == self.instance_id:
+                                            self._reservation = rs[0]
+                                            self._instance = instance
+                            except EC2ResponseError:
+                                pass
                             
     def _status(self):
         status = ''
@@ -388,6 +433,12 @@ class Server(Model):
             hostname = self._instance.private_dns_name
         return hostname
 
+    def _instance_type(self):
+        it = ''
+        if self._instance:
+            it = self._instance.instance_type
+        return it
+
     def _launch_time(self):
         lt = ''
         if self._instance:
@@ -405,6 +456,12 @@ class Server(Model):
         if self._reservation:
             gn = self._reservation.groups
         return gn
+
+    def _security_group(self):
+        groups = self._groups()
+        if len(groups) >= 1:
+            return groups[0].id
+        return ""
 
     def _zone(self):
         zone = None
@@ -456,6 +513,7 @@ class Server(Model):
 
     def get_cmdshell(self):
         if not self._cmdshell:
+            import cmdshell
             self.get_ssh_key_file()
             self._cmdshell = cmdshell.start(self)
         return self._cmdshell
@@ -468,22 +526,17 @@ class Server(Model):
             status = cmd.run(command)
         return status
 
-    def get_bundler(self, key_file=None):
-        self.get_ssh_key_file()
-        return SSHClient(self)
+    def get_bundler(self, uname='root'):
+        ssh_key_file = self.get_ssh_key_file()
+        return Bundler(self, uname)
+
+    def get_ssh_client(self, uname='root'):
+        from boto.manage.cmdshell import SSHClient
+        ssh_key_file = self.get_ssh_key_file()
+        return SSHClient(self, uname=uname)
 
     def install(self, pkg):
         return self.run('apt-get -y install %s' % pkg)
 
-class MySQLServer(Server):
-
-    root_password = StringProperty(verbose_name="Root Password")
-
-    def test(self):
-        print 'MySQLServer.test'
-
-    @installer('001')
-    def test_mysql(self):
-        print 'MySQLServer.test_mysql'
 
     

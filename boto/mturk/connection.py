@@ -176,7 +176,7 @@ class MTurkConnection(AWSQueryConnection):
             self.build_list_params(params, response_groups, 'ResponseGroup')
                 
         # Submit
-        return self._process_request('CreateHIT', params, [('Reward', Price),])
+        return self._process_request('CreateHIT', params, [('HIT', HIT),])
 
     def get_reviewable_hits(self, hit_type=None, status='Reviewable',
                             sort_by='Expiration', sort_direction='Ascending', 
@@ -312,6 +312,21 @@ class MTurkConnection(AWSQueryConnection):
         params = {'HITId' : hit_id,}
         return self._process_request('DisposeHIT', params)
 
+    def expire_hit(self, hit_id):
+
+        """
+        Expire a HIT that is no longer needed.
+
+	The effect is identical to the HIT expiring on its own. The HIT no longer appears on the 
+	Mechanical Turk web site, and no new Workers are allowed to accept the HIT. Workers who 
+	have accepted the HIT prior to expiration are allowed to complete it or return it, or 
+	allow the assignment duration to elapse (abandon the HIT). Once all remaining assignments 
+	have been submitted, the expired HIT becomes "reviewable", and will be returned by a call 
+	to GetReviewableHITs.
+        """
+        params = {'HITId' : hit_id,}
+        return self._process_request('ForceExpireHIT', params)
+
     def extend_hit(self, hit_id, assignments_increment=None, expiration_increment=None):
         """
         Increase the maximum number of assignments, or extend the expiration date, of an existing HIT.
@@ -374,7 +389,7 @@ class MTurkConnection(AWSQueryConnection):
         """
         body = response.read()
         #print body
-        if response.status == 200:
+        if '<Errors>' not in body:
             rs = ResultSet(marker_elems)
             h = handler.XmlHandler(rs, self)
             xml.sax.parseString(body, h)
@@ -463,7 +478,7 @@ class Assignment(BaseAutoResultElement):
         if name == 'Answer':
             answer_rs = ResultSet([('Answer', QuestionFormAnswer),])
             h = handler.XmlHandler(answer_rs, connection)
-            value = self.get_utf8_value(value)
+            value = self.connection.get_utf8_value(value)
             xml.sax.parseString(value, h)
             self.answers.append(answer_rs)
         else:

@@ -32,11 +32,12 @@ def regions():
     """
     Get all available regions for the SQS service.
         
-    @rtype: list
-    @return: A list of L{RegionInfo<boto.ec2.regioninfo.RegionInfo>}
+    :rtype: list
+    :return: A list of :class:`boto.ec2.regioninfo.RegionInfo`
     """
     return [SQSRegionInfo(name='us-east-1', endpoint='queue.amazonaws.com'),
-            SQSRegionInfo(name='eu-west-1', endpoint='eu-west-1.queue.amazonaws.com')]
+            SQSRegionInfo(name='eu-west-1', endpoint='eu-west-1.queue.amazonaws.com'),
+            SQSRegionInfo(name='us-west-1', endpoint='us-west-1.queue.amazonaws.com')]
 
 def connect_to_region(region_name):
     for region in regions():

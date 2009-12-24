@@ -21,6 +21,7 @@
 
 import weakref
 
+from boto.ec2.zone import Zone
 from boto.ec2.elb.listelement import ListElement
 from boto.resultset import ResultSet
 from boto.ec2.autoscale.trigger import Trigger
@@ -47,6 +48,7 @@ class Instance(object):
 class AutoScalingGroup(object):
     def __init__(self, connection=None, group_name=None,
                  availability_zone=None, launch_config=None,
+                 availability_zones=None,
                  load_balancers=None, cooldown=0,
                  min_size=None, max_size=None):
         """
@@ -57,30 +59,36 @@ class AutoScalingGroup(object):
         creation request is completed, the AutoScalingGroup is ready to be
         used in other calls.
 
-        @type name: str
-        @param name: Name of autoscaling group.
+        :type name: str
+        :param name: Name of autoscaling group.
 
-        @type availability_zone: str
-        @param availability_zone: An availability zone.
+        :type availability_zone: str
+        :param availability_zone: An availability zone. DEPRECATED - use the
+                                  availability_zones parameter, which expects
+                                  a list of availability zone
+                                  strings
 
-        @type launch_config: str
-        @param launch_config: Name of launch configuration name.
+        :type availability_zone: list
+        :param availability_zone: List of availability zones.
 
-        @type load_balancers: list
-        @param load_balancers: List of load balancers.
+        :type launch_config: str
+        :param launch_config: Name of launch configuration name.
 
-        @type minsize: int
-        @param minsize: Minimum size of group
+        :type load_balancers: list
+        :param load_balancers: List of load balancers.
 
-        @type maxsize: int
-        @param maxsize: Maximum size of group
+        :type minsize: int
+        :param minsize: Minimum size of group
 
-        @type cooldown: int
-        @param cooldown: Amount of time after a Scaling Activity completes
+        :type maxsize: int
+        :param maxsize: Maximum size of group
+
+        :type cooldown: int
+        :param cooldown: Amount of time after a Scaling Activity completes
                          before any further scaling activities can start.
 
-        @rtype: tuple
-        @return: Updated healthcheck for the instances.
+        :rtype: tuple
+        :return: Updated healthcheck for the instances.
         """
         self.name = group_name
         self.connection = connection
@@ -96,7 +104,9 @@ class AutoScalingGroup(object):
         self.desired_capacity = None
         lbs = load_balancers or []
         self.load_balancers = ListElement(lbs)
+        zones = availability_zones or []
         self.availability_zone = availability_zone
+        self.availability_zones = ListElement(zones)
         self.instances = None
 
     def __repr__(self):
@@ -108,6 +118,8 @@ class AutoScalingGroup(object):
             return self.instances
         elif name == 'LoadBalancerNames':
             return self.load_balancers
+        elif name == 'AvailabilityZones':
+            return self.availability_zones
         else:
             return
 
