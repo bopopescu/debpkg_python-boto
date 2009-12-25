@@ -14,5 +14,13 @@ Depends: ${python:Depends}
 Provides: ${python:Provides}
 Description: Python interface to Amazon's Web Services
  Boto is a Python interface to the infrastructure services available from
- Amazon. It includes support for S3 (Simple Storage Service), SQS (Simple
- Queue Service), and EC2 (Elastic Compute Cloud).
+ Amazon.
+ .
+ Boto supports the following services:
+  * Elastic Compute Cloud (EC2)
+  * SimpleDB
+  * Simple Storage Service (S3)
+  * CloudFront
+  * Simple Queue Service (SQS)
+  * Elastic MapReduce
+  * Relational Database Service (RDS)
