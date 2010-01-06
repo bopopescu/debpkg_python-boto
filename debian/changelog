@@ -1,3 +1,9 @@
+python-boto (1.9b-2) unstable; urgency=low
+
+  * Depend on versions of Python >= 2.5 (Closes: #563439).
+
+ -- Eric Evans <eevans@debian.org>  Wed, 06 Jan 2010 12:20:56 -0600
+
 python-boto (1.9b-1) unstable; urgency=low
 
   * New upstream version.
