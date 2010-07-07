@@ -1,3 +1,9 @@
+python-boto (1.9b-3) unstable; urgency=low
+
+  * Strings exceptions are not allowed in Python 2.6 (Closes: #585284).
+
+ -- Eric Evans <eevans@debian.org>  Wed, 07 Jul 2010 19:36:13 +0000
+
 python-boto (1.9b-2) unstable; urgency=low
 
   * Depend on versions of Python >= 2.5 (Closes: #563439).
