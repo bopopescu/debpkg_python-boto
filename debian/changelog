@@ -1,3 +1,11 @@
+python-boto (1.9b-5) unstable; urgency=low
+
+  * Updated to Debian Policy version 3.9.2.
+  * Patched to include Python 2.7 in httplib work-around for https
+    signatures.  Thanks Matthias Klose.  (Closes: #607120)
+
+ -- Eric Evans <eevans@debian.org>  Sun, 03 Jul 2011 16:04:44 -0500
+
 python-boto (1.9b-4) unstable; urgency=low
 
   * Do not require Name param on RegisterImage (Closes: #591466).
