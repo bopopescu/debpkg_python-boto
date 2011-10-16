@@ -1,4 +1,5 @@
 # Copyright (c) 2006-2009 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2010 Chris Moyer http://coredumped.org/
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -27,7 +28,7 @@ import boto.ec2
 from boto.mashups.iobject import IObject
 from boto.pyami.config import BotoConfigPath, Config
 from boto.sdb.db.model import Model
-from boto.sdb.db.property import *
+from boto.sdb.db.property import StringProperty, IntegerProperty, BooleanProperty, CalculatedProperty
 from boto.manage import propget
 from boto.ec2.zone import Zone
 from boto.ec2.keypair import KeyPair
@@ -49,7 +50,7 @@ class Bundler(object):
 
     def copy_x509(self, key_file, cert_file):
         print '\tcopying cert and pk over to /mnt directory on server'
-        sftp_client = self.ssh_client.open_sftp()
+        self.ssh_client.open_sftp()
         path, name = os.path.split(key_file)
         self.remote_key_file = '/mnt/%s' % name
         self.ssh_client.put_file(key_file, self.remote_key_file)
@@ -103,16 +104,16 @@ class Bundler(object):
         self.copy_x509(key_file, cert_file)
         if not fp:
             fp = StringIO.StringIO()
-        fp.write('mv %s /mnt/boto.cfg; ' % BotoConfigPath)
-        fp.write('mv /root/.ssh/authorized_keys /mnt/authorized_keys; ')
+        fp.write('sudo mv %s /mnt/boto.cfg; ' % BotoConfigPath)
+        fp.write('mv ~/.ssh/authorized_keys /mnt/authorized_keys; ')
         if clear_history:
             fp.write('history -c; ')
         fp.write(self.bundle_image(prefix, size, ssh_key))
         fp.write('; ')
         fp.write(self.upload_bundle(bucket, prefix, ssh_key))
         fp.write('; ')
-        fp.write('mv /mnt/boto.cfg %s; ' % BotoConfigPath)
-        fp.write('mv /mnt/authorized_keys /root/.ssh/authorized_keys\n')
+        fp.write('sudo mv /mnt/boto.cfg %s; ' % BotoConfigPath)
+        fp.write('mv /mnt/authorized_keys ~/.ssh/authorized_keys')
         command = fp.getvalue()
         print 'running the following command on the remote server:'
         print command
@@ -121,7 +122,7 @@ class Bundler(object):
         print '\t%s' % t[1]
         print '...complete!'
         print 'registering image...'
-        self.image_id = self.server.ec2.register_image('%s/%s.manifest.xml' % (bucket, prefix))
+        self.image_id = self.server.ec2.register_image(name=prefix, image_location='%s/%s.manifest.xml' % (bucket, prefix))
         return self.image_id
 
 class CommandLineGetter(object):
@@ -142,6 +143,7 @@ class CommandLineGetter(object):
         if not region:
             prop = self.cls.find_property('region_name')
             params['region'] = propget.get(prop, choices=boto.ec2.regions)
+        self.ec2 = params['region'].connect()
 
     def get_name(self, params):
         if not params.get('name', None):
@@ -171,17 +173,19 @@ class CommandLineGetter(object):
             params['zone'] = propget.get(prop)
             
     def get_ami_id(self, params):
-        ami = params.get('ami', None)
-        if isinstance(ami, str) or isinstance(ami, unicode):
-            ami_list = self.get_ami_list()
-            for l,a in ami_list:
-                if a.id == ami:
-                    ami = a
-                    params['ami'] = a
-        if not params.get('ami', None):
-            prop = StringProperty(name='ami', verbose_name='AMI',
-                                  choices=self.get_ami_list)
-            params['ami'] = propget.get(prop)
+        valid = False
+        while not valid:
+            ami = params.get('ami', None)
+            if not ami:
+                prop = StringProperty(name='ami', verbose_name='AMI')
+                ami = propget.get(prop)
+            try:
+                rs = self.ec2.get_all_images([ami])
+                if len(rs) == 1:
+                    valid = True
+                    params['ami'] = rs[0]
+            except EC2ResponseError:
+                pass
 
     def get_group(self, params):
         group = params.get('group', None)
@@ -262,26 +266,26 @@ class Server(Model):
         cfg.set('DB_Server', 'db_type', 'SimpleDB')
         cfg.set('DB_Server', 'db_name', cls._manager.domain.name)
 
-    '''
-    Create a new instance based on the specified configuration file or the specified
-    configuration and the passed in parameters.
-    
-    If the config_file argument is not None, the configuration is read from there. 
-    Otherwise, the cfg argument is used.
-
-    The config file may include other config files with a #import reference. The included
-    config files must reside in the same directory as the specified file. 
-    
-    The logical_volume argument, if supplied, will be used to get the current physical 
-    volume ID and use that as an override of the value specified in the config file. This 
-    may be useful for debugging purposes when you want to debug with a production config 
-    file but a test Volume. 
-    
-    The dictionary argument may be used to override any EC2 configuration values in the 
-    config file. 
-    '''
     @classmethod
     def create(cls, config_file=None, logical_volume = None, cfg = None, **params):
+        """
+        Create a new instance based on the specified configuration file or the specified
+        configuration and the passed in parameters.
+        
+        If the config_file argument is not None, the configuration is read from there. 
+        Otherwise, the cfg argument is used.
+        
+        The config file may include other config files with a #import reference. The included
+        config files must reside in the same directory as the specified file. 
+        
+        The logical_volume argument, if supplied, will be used to get the current physical 
+        volume ID and use that as an override of the value specified in the config file. This 
+        may be useful for debugging purposes when you want to debug with a production config 
+        file but a test Volume. 
+        
+        The dictionary argument may be used to override any EC2 configuration values in the 
+        config file. 
+        """
         if config_file:
             cfg = Config(path=config_file)
         if cfg.has_section('EC2'):
@@ -321,6 +325,10 @@ class Server(Model):
         instances = reservation.instances
         if elastic_ip != None and instances.__len__() > 0:
             instance = instances[0]
+            print 'Waiting for instance to start so we can set its elastic IP address...'
+            # Sometimes we get a message from ec2 that says that the instance does not exist.
+            # Hopefully the following delay will giv eec2 enough time to get to a stable state:
+            time.sleep(5) 
             while instance.update() != 'running':
                 time.sleep(1)
             instance.use_ip(elastic_ip)
@@ -491,6 +499,12 @@ class Server(Model):
         if self._instance:
             self._instance.stop()
 
+    def terminate(self):
+        if self.production:
+            raise ValueError, "Can't delete a production server"
+        if self._instance:
+            self._instance.terminate()
+
     def reboot(self):
         if self._instance:
             self._instance.reboot()
@@ -527,13 +541,13 @@ class Server(Model):
         return status
 
     def get_bundler(self, uname='root'):
-        ssh_key_file = self.get_ssh_key_file()
+        self.get_ssh_key_file()
         return Bundler(self, uname)
 
-    def get_ssh_client(self, uname='root'):
+    def get_ssh_client(self, uname='root', ssh_pwd=None):
         from boto.manage.cmdshell import SSHClient
-        ssh_key_file = self.get_ssh_key_file()
-        return SSHClient(self, uname=uname)
+        self.get_ssh_key_file()
+        return SSHClient(self, uname=uname, ssh_pwd=ssh_pwd)
 
     def install(self, pkg):
         return self.run('apt-get -y install %s' % pkg)

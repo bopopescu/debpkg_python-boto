@@ -20,10 +20,12 @@
 # IN THE SOFTWARE.
 #
 
-class EBSBlockDeviceType(object):
+class BlockDeviceType(object):
 
     def __init__(self, connection=None):
         self.connection = connection
+        self.ephemeral_name = None
+        self.no_device = False
         self.volume_id = None
         self.snapshot_id = None
         self.status = None
@@ -37,6 +39,10 @@ class EBSBlockDeviceType(object):
     def endElement(self, name, value, connection):
         if name =='volumeId':
             self.volume_id = value
+        elif name == 'virtualName':
+            self.ephemeral_name = value
+        elif name =='NoDevice':
+            self.no_device = (value == 'true')
         elif name =='snapshotId':
             self.snapshot_id = value
         elif name == 'volumeSize':
@@ -53,6 +59,9 @@ class EBSBlockDeviceType(object):
         else:
             setattr(self, name, value)
 
+# for backwards compatibility
+EBSBlockDeviceType = BlockDeviceType
+
 class BlockDeviceMapping(dict):
 
     def __init__(self, connection=None):
@@ -62,8 +71,8 @@ class BlockDeviceMapping(dict):
         self.current_value = None
 
     def startElement(self, name, attrs, connection):
-        if name == 'ebs':
-            self.current_value = EBSBlockDeviceType(self)
+        if name == 'ebs' or name == 'virtualName':
+            self.current_value = BlockDeviceType(self)
             return self.current_value
 
     def endElement(self, name, value, connection):
@@ -75,15 +84,20 @@ class BlockDeviceMapping(dict):
     def build_list_params(self, params, prefix=''):
         i = 1
         for dev_name in self:
-            pre = '%sBlockDeviceMapping.%d' % (pre, i)
+            pre = '%sBlockDeviceMapping.%d' % (prefix, i)
             params['%s.DeviceName' % pre] = dev_name
-            ebs = self[dev_name]
-            if ebs.snapshot_id:
-                params['%s.Ebs.SnapshotId' % pre] = ebs.snapshot_id
-            if ebs.size:
-                params['%s.Ebs.VolumeSize' % pre] = ebs.size
-            if ebs.delete_on_termination:
-                params['%s.Ebs.DeleteOnTermination' % pre] = 'true'
+            block_dev = self[dev_name]
+            if block_dev.ephemeral_name:
+                params['%s.VirtualName' % pre] = block_dev.ephemeral_name
             else:
-                params['%s.Ebs.DeleteOnTermination' % pre] = 'false'
+                if block_dev.no_device:
+                    params['%s.Ebs.NoDevice' % pre] = 'true'
+                if block_dev.snapshot_id:
+                    params['%s.Ebs.SnapshotId' % pre] = block_dev.snapshot_id
+                if block_dev.size:
+                    params['%s.Ebs.VolumeSize' % pre] = block_dev.size
+                if block_dev.delete_on_termination:
+                    params['%s.Ebs.DeleteOnTermination' % pre] = 'true'
+                else:
+                    params['%s.Ebs.DeleteOnTermination' % pre] = 'false'
             i += 1

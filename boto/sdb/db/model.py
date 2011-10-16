@@ -20,7 +20,7 @@
 # IN THE SOFTWARE.
 
 from boto.sdb.db.manager import get_manager
-from boto.sdb.db.property import *
+from boto.sdb.db.property import Property
 from boto.sdb.db.key import Key
 from boto.sdb.db.query import Query
 import boto
@@ -55,6 +55,8 @@ class ModelMeta(type):
         
 class Model(object):
     __metaclass__ = ModelMeta
+    __consistent__ = False # Consistent is set off by default
+    id = None
 
     @classmethod
     def get_lineage(cls):
@@ -92,10 +94,6 @@ class Model(object):
         for key, value in params.items():
             q.filter('%s =' % key, value)
         return q
-
-    @classmethod
-    def lookup(cls, name, value):
-        return cls._manager.lookup(cls, name, value)
 
     @classmethod
     def all(cls, limit=None, next_token=None):
@@ -150,9 +148,12 @@ class Model(object):
 
     def __init__(self, id=None, **kw):
         self._loaded = False
-        # first initialize all properties to their default values
+        # first try to initialize all properties to their default values
         for prop in self.properties(hidden=False):
-            setattr(self, prop.name, prop.default_value())
+            try:
+                setattr(self, prop.name, prop.default_value())
+            except ValueError:
+                pass
         if kw.has_key('manager'):
             self._manager = kw['manager']
         self.id = id
@@ -181,8 +182,13 @@ class Model(object):
         if self.id and not self._loaded:
             self._manager.load_object(self)
 
-    def put(self):
-        self._manager.save_object(self)
+    def reload(self):
+        if self.id:
+            self._loaded = False
+            self._manager.load_object(self)
+
+    def put(self, expected_value=None):
+        self._manager.save_object(self, expected_value)
 
     save = put
         
@@ -207,6 +213,16 @@ class Model(object):
         xmlmanager = self.get_xmlmanager()
         doc = xmlmanager.marshal_object(self, doc)
         return doc
+
+    @classmethod
+    def find_subclass(cls, name):
+        """Find a subclass with a given name"""
+        if name == cls.__name__:
+            return cls
+        for sc in cls.__sub_classes__:
+            r = sc.find_subclass(name)
+            if r != None:
+                return r
 
 class Expando(Model):
 

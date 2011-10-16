@@ -1,4 +1,5 @@
-# Copyright (c) 2006,2007 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006-2010 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2010, Eucalyptus Systems, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -20,14 +21,14 @@
 # IN THE SOFTWARE.
 
 """
-Represents an EC2 Elastic IP Volume
+Represents an EC2 Elastic Block Storage Volume
 """
-from boto.ec2.ec2object import EC2Object
+from boto.ec2.ec2object import TaggedEC2Object
 
-class Volume(EC2Object):
+class Volume(TaggedEC2Object):
     
     def __init__(self, connection=None):
-        EC2Object.__init__(self, connection)
+        TaggedEC2Object.__init__(self, connection)
         self.id = None
         self.create_time = None
         self.status = None
@@ -40,9 +41,15 @@ class Volume(EC2Object):
         return 'Volume:%s' % self.id
 
     def startElement(self, name, attrs, connection):
+        retval = TaggedEC2Object.startElement(self, name, attrs, connection)
+        if retval is not None:
+            return retval
         if name == 'attachmentSet':
             self.attach_data = AttachmentSet()
             return self.attach_data
+        elif name == 'tagSet':
+            self.tags = boto.resultset.ResultSet([('item', Tag)])
+            return self.tags
         else:
             return None
 
@@ -64,26 +71,24 @@ class Volume(EC2Object):
             setattr(self, name, value)
 
     def _update(self, updated):
-        self.updated = updated
-        if hasattr(updated, 'create_time'):
-            self.create_time = updated.create_time
-        if hasattr(updated, 'status'):
-            self.status = updated.status
-        else:
-            self.status = None
-        if hasattr(updated, 'size'):
-            self.size = updated.size
-        if hasattr(updated, 'snapshot_id'):
-            self.snapshot_id = updated.snapshot_id
-        if hasattr(updated, 'attach_data'):
-            self.attach_data = updated.attach_data
-        if hasattr(updated, 'zone'):
-            self.zone = updated.zone
+        self.__dict__.update(updated.__dict__)
 
-    def update(self):
+    def update(self, validate=False):
+        """
+        Update the data associated with this volume by querying EC2.
+
+        :type validate: bool
+        :param validate: By default, if EC2 returns no data about the
+                         volume the update method returns quietly.  If
+                         the validate param is True, however, it will
+                         raise a ValueError exception if no data is
+                         returned from EC2.
+        """
         rs = self.connection.get_all_volumes([self.id])
         if len(rs) > 0:
             self._update(rs[0])
+        elif validate:
+            raise ValueError('%s is not a valid Volume ID' % self.id)
         return self.status
 
     def delete(self):
@@ -105,7 +110,7 @@ class Volume(EC2Object):
 
         :type device: str
         :param device: The device on the instance through which the
-                       volume will be exposted (e.g. /dev/sdh)
+                       volume will be exposed (e.g. /dev/sdh)
 
         :rtype: bool
         :return: True if successful
@@ -156,14 +161,7 @@ class Volume(EC2Object):
 
     def attachment_state(self):
         """
-        Get the attachmentSet information for the volume.  This info is stored
-        in a dictionary object and contains at least the following info:
-
-        - volumeId
-        - instanceId
-        - device
-        - status
-        - attachTime
+        Get the attachment state.
         """
         state = None
         if self.attach_data:

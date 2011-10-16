@@ -1,4 +1,5 @@
-# Copyright (c) 2006-2009 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006-2010 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2010, Eucalyptus Systems, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -23,7 +24,7 @@
 Represents an EC2 Spot Instance Request
 """
 
-from boto.ec2.ec2object import EC2Object
+from boto.ec2.ec2object import TaggedEC2Object
 from boto.ec2.launchspecification import LaunchSpecification
 
 class SpotInstanceStateFault(object):
@@ -40,15 +41,15 @@ class SpotInstanceStateFault(object):
 
     def endElement(self, name, value, connection):
         if name == 'code':
-            self.code = code
+            self.code = value
         elif name == 'message':
-            self.message = message
+            self.message = value
         setattr(self, name, value)
 
-class SpotInstanceRequest(EC2Object):
+class SpotInstanceRequest(TaggedEC2Object):
     
     def __init__(self, connection=None):
-        EC2Object.__init__(self, connection)
+        TaggedEC2Object.__init__(self, connection)
         self.id = None
         self.price = None
         self.type = None
@@ -61,11 +62,15 @@ class SpotInstanceRequest(EC2Object):
         self.availability_zone_group = None
         self.create_time = None
         self.launch_specification = None
+        self.instance_id = None
 
     def __repr__(self):
         return 'SpotInstanceRequest:%s' % self.id
 
     def startElement(self, name, attrs, connection):
+        retval = TaggedEC2Object.startElement(self, name, attrs, connection)
+        if retval is not None:
+            return retval
         if name == 'launchSpecification':
             self.launch_specification = LaunchSpecification(connection)
             return self.launch_specification
@@ -96,6 +101,8 @@ class SpotInstanceRequest(EC2Object):
             self.availability_zone_group = value
         elif name == 'createTime':
             self.create_time = value
+        elif name == 'instanceId':
+            self.instance_id = value
         else:
             setattr(self, name, value)
 

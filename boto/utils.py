@@ -1,4 +1,6 @@
-# Copyright (c) 2006,2007 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006-2010 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2010, Eucalyptus Systems, Inc.
+# All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -36,13 +38,12 @@
 Some handy utility functions used by several classes.
 """
 
-import base64
-import hmac
-import re
-import urllib, urllib2
+import urllib
+import urllib2
 import imp
-import subprocess, os, StringIO
-import time, datetime
+import subprocess
+import StringIO
+import time
 import logging.handlers
 import boto
 import tempfile
@@ -53,6 +54,8 @@ from email.MIMEBase import MIMEBase
 from email.MIMEText import MIMEText
 from email.Utils import formatdate
 from email import Encoders
+import gzip
+
 
 try:
     import hashlib
@@ -61,15 +64,25 @@ except ImportError:
     import md5
     _hashfn = md5.md5
 
-METADATA_PREFIX = 'x-amz-meta-'
-AMAZON_HEADER_PREFIX = 'x-amz-'
+# List of Query String Arguments of Interest
+qsa_of_interest = ['acl', 'location', 'logging', 'partNumber', 'policy',
+                   'requestPayment', 'torrent', 'versioning', 'versionId',
+                   'versions', 'website', 'uploads', 'uploadId',
+                   'response-content-type', 'response-content-language',
+                   'response-expires', 'reponse-cache-control',
+                   'response-content-disposition',
+                   'response-content-encoding']
 
 # generates the aws canonical string for the given parameters
-def canonical_string(method, path, headers, expires=None):
+def canonical_string(method, path, headers, expires=None,
+                     provider=None):
+    if not provider:
+        provider = boto.provider.get_default()
     interesting_headers = {}
     for key in headers:
         lk = key.lower()
-        if lk in ['content-md5', 'content-type', 'date'] or lk.startswith(AMAZON_HEADER_PREFIX):
+        if headers[key] != None and (lk in ['content-md5', 'content-type', 'date'] or
+                                     lk.startswith(provider.header_prefix)):
             interesting_headers[lk] = headers[key].strip()
 
     # these keys get empty strings if they don't exist
@@ -79,11 +92,11 @@ def canonical_string(method, path, headers, expires=None):
         interesting_headers['content-md5'] = ''
 
     # just in case someone used this.  it's not necessary in this lib.
-    if interesting_headers.has_key('x-amz-date'):
+    if interesting_headers.has_key(provider.date_header):
         interesting_headers['date'] = ''
 
     # if you're using expires for query string auth, then it trumps date
-    # (and x-amz-date)
+    # (and provider.date_header)
     if expires:
         interesting_headers['date'] = str(expires)
 
@@ -92,29 +105,33 @@ def canonical_string(method, path, headers, expires=None):
 
     buf = "%s\n" % method
     for key in sorted_header_keys:
-        if key.startswith(AMAZON_HEADER_PREFIX):
-            buf += "%s:%s\n" % (key, interesting_headers[key])
+        val = interesting_headers[key]
+        if key.startswith(provider.header_prefix):
+            buf += "%s:%s\n" % (key, val)
         else:
-            buf += "%s\n" % interesting_headers[key]
+            buf += "%s\n" % val
 
     # don't include anything after the first ? in the resource...
-    buf += "%s" % path.split('?')[0]
+    # unless it is one of the QSA of interest, defined above
+    t =  path.split('?')
+    buf += t[0]
 
-    # ...unless there is an acl or torrent parameter
-    if re.search("[&?]acl($|=|&)", path):
-        buf += "?acl"
-    elif re.search("[&?]logging($|=|&)", path):
-        buf += "?logging"
-    elif re.search("[&?]torrent($|=|&)", path):
-        buf += "?torrent"
-    elif re.search("[&?]location($|=|&)", path):
-        buf += "?location"
-    elif re.search("[&?]requestPayment($|=|&)", path):
-        buf += "?requestPayment"
+    if len(t) > 1:
+        qsa = t[1].split('&')
+        qsa = [ a.split('=') for a in qsa]
+        qsa = [ a for a in qsa if a[0] in qsa_of_interest ]
+        if len(qsa) > 0:
+            qsa.sort(cmp=lambda x,y:cmp(x[0], y[0]))
+            qsa = [ '='.join(a) for a in qsa ]
+            buf += '?'
+            buf += '&'.join(qsa)
 
     return buf
 
-def merge_meta(headers, metadata):
+def merge_meta(headers, metadata, provider=None):
+    if not provider:
+        provider = boto.provider.get_default()
+    metadata_prefix = provider.metadata_prefix
     final_headers = headers.copy()
     for k in metadata.keys():
         if k.lower() in ['cache-control', 'content-md5', 'content-type',
@@ -122,20 +139,27 @@ def merge_meta(headers, metadata):
                          'date', 'expires']:
             final_headers[k] = metadata[k]
         else:
-            final_headers[METADATA_PREFIX + k] = metadata[k]
+            final_headers[metadata_prefix + k] = metadata[k]
 
     return final_headers
 
-def get_aws_metadata(headers):
+def get_aws_metadata(headers, provider=None):
+    if not provider:
+        provider = boto.provider.get_default()
+    metadata_prefix = provider.metadata_prefix
     metadata = {}
     for hkey in headers.keys():
-        if hkey.lower().startswith(METADATA_PREFIX):
-            metadata[hkey[len(METADATA_PREFIX):]] = headers[hkey]
+        if hkey.lower().startswith(metadata_prefix):
+            val = urllib.unquote_plus(headers[hkey])
+            try:
+                metadata[hkey[len(metadata_prefix):]] = unicode(val, 'utf-8')
+            except UnicodeDecodeError:
+                metadata[hkey[len(metadata_prefix):]] = val
             del headers[hkey]
     return metadata
 
-def retry_url(url, retry_on_404=True):
-    for i in range(0, 10):
+def retry_url(url, retry_on_404=True, num_retries=10):
+    for i in range(0, num_retries):
         try:
             req = urllib2.Request(url)
             resp = urllib2.urlopen(req)
@@ -177,7 +201,7 @@ def _get_instance_metadata(url):
                 d[key] = val
     return d
 
-def get_instance_metadata(version='latest'):
+def get_instance_metadata(version='latest', url='http://169.254.169.254'):
     """
     Returns the instance metadata as a nested Python dictionary.
     Simple values (e.g. local_hostname, hostname, etc.) will be
@@ -185,12 +209,12 @@ def get_instance_metadata(version='latest'):
     be stored in the dict as a list of string values.  More complex
     fields such as public-keys and will be stored as nested dicts.
     """
-    url = 'http://169.254.169.254/%s/meta-data/' % version
-    return _get_instance_metadata(url)
+    return _get_instance_metadata('%s/%s/meta-data/' % (url, version))
 
-def get_instance_userdata(version='latest', sep=None):
-    url = 'http://169.254.169.254/%s/user-data' % version
-    user_data = retry_url(url, retry_on_404=False)
+def get_instance_userdata(version='latest', sep=None,
+                          url='http://169.254.169.254'):
+    ud_url = '%s/%s/user-data' % (url,version)
+    user_data = retry_url(ud_url, retry_on_404=False)
     if user_data:
         if sep:
             l = user_data.split(sep)
@@ -214,7 +238,6 @@ def find_class(module_name, class_name=None):
     if class_name:
         module_name = "%s.%s" % (module_name, class_name)
     modules = module_name.split('.')
-    path = None
     c = None
 
     try:
@@ -247,10 +270,9 @@ def fetch_file(uri, file=None, username=None, password=None):
     if file == None:
         file = tempfile.NamedTemporaryFile()
     try:
-        working_dir = boto.config.get("General", "working_dir")
         if uri.startswith('s3://'):
             bucket_name, key_name = uri[len('s3://'):].split('/', 1)
-            c = boto.connect_s3()
+            c = boto.connect_s3(aws_access_key_id=username, aws_secret_access_key=password)
             bucket = c.get_bucket(bucket_name)
             key = bucket.get_key(key_name)
             key.get_contents_to_file(file)
@@ -272,17 +294,19 @@ def fetch_file(uri, file=None, username=None, password=None):
 
 class ShellCommand(object):
 
-    def __init__(self, command, wait=True):
+    def __init__(self, command, wait=True, fail_fast=False, cwd = None):
         self.exit_code = 0
         self.command = command
         self.log_fp = StringIO.StringIO()
         self.wait = wait
-        self.run()
+        self.fail_fast = fail_fast
+        self.run(cwd = cwd)
 
-    def run(self):
+    def run(self, cwd=None):
         boto.log.info('running:%s' % self.command)
         self.process = subprocess.Popen(self.command, shell=True, stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        cwd=cwd)
         if(self.wait):
             while self.process.poll() == None:
                 time.sleep(1)
@@ -291,6 +315,10 @@ class ShellCommand(object):
                 self.log_fp.write(t[1])
             boto.log.info(self.log_fp.getvalue())
             self.exit_code = self.process.returncode
+
+            if self.fail_fast and self.exit_code != 0:
+                raise Exception("Command " + self.command + " failed with status " + self.exit_code)
+
             return self.exit_code
 
     def setReadOnly(self, value):
@@ -340,11 +368,6 @@ class AuthSMTPHandler(logging.handlers.SMTPHandler):
         without having to resort to cut and paste inheritance but, no.
         """
         try:
-            import smtplib
-            try:
-                from email.Utils import formatdate
-            except:
-                formatdate = self.date_time
             port = self.mailport
             if not port:
                 port = smtplib.SMTP_PORT
@@ -353,7 +376,7 @@ class AuthSMTPHandler(logging.handlers.SMTPHandler):
             msg = self.format(record)
             msg = "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\n\r\n%s" % (
                             self.fromaddr,
-                            string.join(self.toaddrs, ","),
+                            ','.join(self.toaddrs),
                             self.getSubject(record),
                             formatdate(), msg)
             smtp.sendmail(self.fromaddr, self.toaddrs, msg)
@@ -460,7 +483,6 @@ class LRUCache(dict):
 
     def _manage_size(self):
         while len(self._dict) > self.capacity:
-            olditem = self._dict[self.tail.key]
             del self._dict[self.tail.key]
             if self.tail != self.head:
                 self.tail = self.tail.previous
@@ -485,16 +507,20 @@ class LRUCache(dict):
 
 class Password(object):
     """
-    Password object that stores itself as SHA512 hashed.
+    Password object that stores itself as hashed.
+    Hash defaults to SHA512 if available, MD5 otherwise.
     """
-    def __init__(self, str=None):
+    hashfunc=_hashfn
+    def __init__(self, str=None, hashfunc=None):
         """
-        Load the string from an initial value, this should be the raw SHA512 hashed password
+        Load the string from an initial value, this should be the raw hashed password.
         """
         self.str = str
+        if hashfunc:
+           self.hashfunc = hashfunc
 
     def set(self, value):
-        self.str = _hashfn(value).hexdigest()
+        self.str = self.hashfunc(value).hexdigest()
    
     def __str__(self):
         return str(self.str)
@@ -502,7 +528,7 @@ class Password(object):
     def __eq__(self, other):
         if other == None:
             return False
-        return str(_hashfn(other).hexdigest()) == str(self.str)
+        return str(self.hashfunc(other).hexdigest()) == str(self.str)
 
     def __len__(self):
         if self.str:
@@ -510,7 +536,8 @@ class Password(object):
         else:
             return 0
 
-def notify(subject, body=None, html_body=None, to_string=None, attachments=[], append_instance_id=True):
+def notify(subject, body=None, html_body=None, to_string=None, attachments=None, append_instance_id=True):
+    attachments = attachments or []
     if append_instance_id:
         subject = "[%s] %s" % (boto.config.get_value("Instance", "instance-id"), subject)
     if not to_string:
@@ -520,6 +547,7 @@ def notify(subject, body=None, html_body=None, to_string=None, attachments=[], a
             from_string = boto.config.get_value('Notification', 'smtp_from', 'boto')
             msg = MIMEMultipart()
             msg['From'] = from_string
+            msg['Reply-To'] = from_string
             msg['To'] = to_string
             msg['Date'] = formatdate(localtime=True)
             msg['Subject'] = subject
@@ -558,3 +586,100 @@ def notify(subject, body=None, html_body=None, to_string=None, attachments=[], a
         except:
             boto.log.exception('notify failed')
 
+def get_utf8_value(value):
+    if not isinstance(value, str) and not isinstance(value, unicode):
+        value = str(value)
+    if isinstance(value, unicode):
+        return value.encode('utf-8')
+    else:
+        return value
+
+def mklist(value):
+    if not isinstance(value, list):
+        if isinstance(value, tuple):
+            value = list(value)
+        else:
+            value = [value]
+    return value
+
+def pythonize_name(name, sep='_'):
+    s = ''
+    if name[0].isupper:
+        s = name[0].lower()
+    for c in name[1:]:
+        if c.isupper():
+            s += sep + c.lower()
+        else:
+            s += c
+    return s
+
+def write_mime_multipart(content, compress=False, deftype='text/plain', delimiter=':'):
+    """Description:
+    :param content: A list of tuples of name-content pairs. This is used
+    instead of a dict to ensure that scripts run in order
+    :type list of tuples:
+
+    :param compress: Use gzip to compress the scripts, defaults to no compression
+    :type bool:
+
+    :param deftype: The type that should be assumed if nothing else can be figured out
+    :type str:
+
+    :param delimiter: mime delimiter
+    :type str:
+
+    :return: Final mime multipart
+    :rtype: str:
+    """
+    wrapper = MIMEMultipart()
+    for name,con in content:
+        definite_type = guess_mime_type(con, deftype)
+        maintype, subtype = definite_type.split('/', 1)
+        if maintype == 'text':
+            mime_con = MIMEText(con, _subtype=subtype)
+        else:
+            mime_con = MIMEBase(maintype, subtype)
+            mime_con.set_payload(con)
+            # Encode the payload using Base64
+            Encoders.encode_base64(mime_con)
+        mime_con.add_header('Content-Disposition', 'attachment', filename=name)
+        wrapper.attach(mime_con)
+    rcontent = wrapper.as_string()
+
+    if compress:
+        buf = StringIO.StringIO()
+        gz = gzip.GzipFile(mode='wb', fileobj=buf)
+        try:
+            gz.write(rcontent)
+        finally:
+            gz.close()
+        rcontent = buf.getvalue()
+
+    return rcontent
+
+def guess_mime_type(content, deftype):
+    """Description: Guess the mime type of a block of text
+    :param content: content we're finding the type of
+    :type str:
+
+    :param deftype: Default mime type
+    :type str:
+
+    :rtype: <type>:
+    :return: <description>
+    """
+    #Mappings recognized by cloudinit
+    starts_with_mappings={
+        '#include' : 'text/x-include-url',
+        '#!' : 'text/x-shellscript',
+        '#cloud-config' : 'text/cloud-config',
+        '#upstart-job'  : 'text/upstart-job',
+        '#part-handler' : 'text/part-handler',
+        '#cloud-boothook' : 'text/cloud-boothook'
+    }
+    rtype = deftype
+    for possible_type,mimetype in starts_with_mappings.items():
+        if content.startswith(possible_type):
+            rtype = mimetype
+            break
+    return(rtype)

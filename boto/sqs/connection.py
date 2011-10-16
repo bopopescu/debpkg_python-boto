@@ -20,14 +20,12 @@
 # IN THE SOFTWARE.
 
 from boto.connection import AWSQueryConnection
-import xml.sax
 from boto.sqs.regioninfo import SQSRegionInfo
 from boto.sqs.queue import Queue
 from boto.sqs.message import Message
 from boto.sqs.attributes import Attributes
-from boto import handler
-from boto.resultset import ResultSet
 from boto.exception import SQSError
+
 
 class SQSConnection(AWSQueryConnection):
     """
@@ -36,7 +34,6 @@ class SQSConnection(AWSQueryConnection):
     DefaultRegionName = 'us-east-1'
     DefaultRegionEndpoint = 'queue.amazonaws.com'
     APIVersion = '2009-02-01'
-    SignatureVersion = '2'
     DefaultContentType = 'text/plain'
     ResponseError = SQSError
     
@@ -50,6 +47,9 @@ class SQSConnection(AWSQueryConnection):
         AWSQueryConnection.__init__(self, aws_access_key_id, aws_secret_access_key,
                                     is_secure, port, proxy, proxy_port, proxy_user, proxy_pass,
                                     self.region.endpoint, debug, https_connection_factory, path)
+
+    def _required_auth_capability(self):
+        return ['sqs']
 
     def create_queue(self, queue_name, visibility_timeout=None):
         """
@@ -138,26 +138,57 @@ class SQSConnection(AWSQueryConnection):
         :param visibility_timeout: The number of seconds the message should remain invisible
                                    to other queue readers (default=None which uses the Queues default)
 
-        :type attributes: list of strings
-        :param attributes: A list of additional attributes that will be returned
-                           with the response.  Valid values:
+        :type attributes: str
+        :param attributes: The name of additional attribute to return with response
+                           or All if you want all attributes.  The default is to
+                           return no additional attributes.  Valid values:
                            All
                            SenderId
                            SentTimestamp
                            ApproximateReceiveCount
                            ApproximateFirstReceiveTimestamp
         
+        :rtype: list
+        :return: A list of :class:`boto.sqs.message.Message` objects.
         """
         params = {'MaxNumberOfMessages' : number_messages}
         if visibility_timeout:
             params['VisibilityTimeout'] = visibility_timeout
         if attributes:
-            self.build_list_params(self, params, attributes, 'AttributeName')
+            self.build_list_params(params, attributes, 'AttributeName')
         return self.get_list('ReceiveMessage', params, [('Message', queue.message_class)],
                              queue.id, queue)
 
     def delete_message(self, queue, message):
+        """
+        Delete a message from a queue.
+
+        :type queue: A :class:`boto.sqs.queue.Queue` object
+        :param queue: The Queue from which messages are read.
+        
+        :type message: A :class:`boto.sqs.message.Message` object
+        :param message: The Message to be deleted
+        
+        :rtype: bool
+        :return: True if successful, False otherwise.
+        """
         params = {'ReceiptHandle' : message.receipt_handle}
+        return self.get_status('DeleteMessage', params, queue.id)
+
+    def delete_message_from_handle(self, queue, receipt_handle):
+        """
+        Delete a message from a queue, given a receipt handle.
+
+        :type queue: A :class:`boto.sqs.queue.Queue` object
+        :param queue: The Queue from which messages are read.
+        
+        :type receipt_handle: str
+        :param receipt_handle: The receipt handle for the message
+        
+        :rtype: bool
+        :return: True if successful, False otherwise.
+        """
+        params = {'ReceiptHandle' : receipt_handle}
         return self.get_status('DeleteMessage', params, queue.id)
 
     def send_message(self, queue, message_content):

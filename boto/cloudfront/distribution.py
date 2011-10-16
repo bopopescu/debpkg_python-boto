@@ -22,15 +22,69 @@
 import uuid
 from boto.cloudfront.identity import OriginAccessIdentity
 from boto.cloudfront.object import Object, StreamingObject
-from boto.cloudfront.signers import Signer, ActiveTrustedSigners, TrustedSigners
+from boto.cloudfront.signers import ActiveTrustedSigners, TrustedSigners
 from boto.cloudfront.logging import LoggingInfo
+from boto.cloudfront.origin import S3Origin, CustomOrigin
 from boto.s3.acl import ACL
 
 class DistributionConfig:
 
-    def __init__(self, connection=None, origin='', enabled=False,
+    def __init__(self, connection=None, origin=None, enabled=False,
                  caller_reference='', cnames=None, comment='',
-                 origin_access_identity=None, trusted_signers=None):
+                 trusted_signers=None, default_root_object=None,
+                 logging=None):
+        """
+        :param origin: Origin information to associate with the
+                       distribution.  If your distribution will use
+                       an Amazon S3 origin, then this should be an
+                       S3Origin object. If your distribution will use
+                       a custom origin (non Amazon S3), then this
+                       should be a CustomOrigin object.
+        :type origin: :class:`boto.cloudfront.origin.S3Origin` or
+                      :class:`boto.cloudfront.origin.CustomOrigin`
+
+        :param enabled: Whether the distribution is enabled to accept
+                        end user requests for content.
+        :type enabled: bool
+        
+        :param caller_reference: A unique number that ensures the
+                                 request can't be replayed.  If no
+                                 caller_reference is provided, boto
+                                 will generate a type 4 UUID for use
+                                 as the caller reference.
+        :type enabled: str
+        
+        :param cnames: A CNAME alias you want to associate with this
+                       distribution. You can have up to 10 CNAME aliases
+                       per distribution.
+        :type enabled: array of str
+        
+        :param comment: Any comments you want to include about the
+                        distribution.
+        :type comment: str
+        
+        :param trusted_signers: Specifies any AWS accounts you want to
+                                permit to create signed URLs for private
+                                content. If you want the distribution to
+                                use signed URLs, this should contain a
+                                TrustedSigners object; if you want the
+                                distribution to use basic URLs, leave
+                                this None.
+        :type trusted_signers: :class`boto.cloudfront.signers.TrustedSigners`
+        
+        :param default_root_object: Designates a default root object.
+                                    Only include a DefaultRootObject value
+                                    if you are going to assign a default
+                                    root object for the distribution.
+        :type comment: str
+
+        :param logging: Controls whether access logs are written for the
+                        distribution. If you want to turn on access logs,
+                        this should contain a LoggingInfo object; otherwise
+                        it should contain None.
+        :type logging: :class`boto.cloudfront.logging.LoggingInfo`
+        
+        """
         self.connection = connection
         self.origin = origin
         self.enabled = enabled
@@ -42,20 +96,15 @@ class DistributionConfig:
         if cnames:
             self.cnames = cnames
         self.comment = comment
-        self.origin_access_identity = origin_access_identity
         self.trusted_signers = trusted_signers
         self.logging = None
+        self.default_root_object = default_root_object
 
-    def get_oai_value(self):
-        if isinstance(self.origin_access_identity, OriginAccessIdentity):
-            return self.origin_access_identity.uri()
-        else:
-            return self.origin_access_identity
-                
     def to_xml(self):
         s = '<?xml version="1.0" encoding="UTF-8"?>\n'
-        s += '<DistributionConfig xmlns="http://cloudfront.amazonaws.com/doc/2008-12-01/">\n'
-        s += '  <Origin>%s</Origin>\n' % self.origin
+        s += '<DistributionConfig xmlns="http://cloudfront.amazonaws.com/doc/2010-07-15/">\n'
+        if self.origin:
+            s += self.origin.to_xml()
         s += '  <CallerReference>%s</CallerReference>\n' % self.caller_reference
         for cname in self.cnames:
             s += '  <CNAME>%s</CNAME>\n' % cname
@@ -67,9 +116,6 @@ class DistributionConfig:
         else:
             s += 'false'
         s += '</Enabled>\n'
-        if self.origin_access_identity:
-            val = self.get_oai_value()
-            s += '<OriginAccessIdentifier>%s</OriginAccessIdentifier>\n' % val
         if self.trusted_signers:
             s += '<TrustedSigners>\n'
             for signer in self.trusted_signers:
@@ -83,6 +129,9 @@ class DistributionConfig:
             s += '  <Bucket>%s</Bucket>\n' % self.logging.bucket
             s += '  <Prefix>%s</Prefix>\n' % self.logging.prefix
             s += '</Logging>\n'
+        if self.default_root_object:
+            dro = self.default_root_object
+            s += '<DefaultRootObject>%s</DefaultRootObject>\n' % dro
         s += '</DistributionConfig>\n'
         return s
 
@@ -93,14 +142,18 @@ class DistributionConfig:
         elif name == 'Logging':
             self.logging = LoggingInfo()
             return self.logging
+        elif name == 'S3Origin':
+            self.origin = S3Origin()
+            return self.origin
+        elif name == 'CustomOrigin':
+            self.origin = CustomOrigin()
+            return self.origin
         else:
             return None
 
     def endElement(self, name, value, connection):
         if name == 'CNAME':
             self.cnames.append(value)
-        elif name == 'Origin':
-            self.origin = value
         elif name == 'Comment':
             self.comment = value
         elif name == 'Enabled':
@@ -110,23 +163,27 @@ class DistributionConfig:
                 self.enabled = False
         elif name == 'CallerReference':
             self.caller_reference = value
-        elif name == 'OriginAccessIdentity':
-            self.origin_access_identity = value
+        elif name == 'DefaultRootObject':
+            self.default_root_object = value
         else:
             setattr(self, name, value)
 
 class StreamingDistributionConfig(DistributionConfig):
 
     def __init__(self, connection=None, origin='', enabled=False,
-                 caller_reference='', cnames=None, comment=''):
-        DistributionConfig.__init__(self, connection, origin,
-                                    enabled, caller_reference,
-                                    cnames, comment)
-
+                 caller_reference='', cnames=None, comment='',
+                 trusted_signers=None, logging=None):
+        DistributionConfig.__init__(self, connection=connection,
+                                    origin=origin, enabled=enabled,
+                                    caller_reference=caller_reference,
+                                    cnames=cnames, comment=comment,
+                                    trusted_signers=trusted_signers,
+                                    logging=logging)
     def to_xml(self):
         s = '<?xml version="1.0" encoding="UTF-8"?>\n'
-        s += '<StreamingDistributionConfig xmlns="http://cloudfront.amazonaws.com/doc/2009-12-01/">\n'
-        s += '  <Origin>%s</Origin>\n' % self.origin
+        s += '<StreamingDistributionConfig xmlns="http://cloudfront.amazonaws.com/doc/2010-07-15/">\n'
+        if self.origin:
+            s += self.origin.to_xml()
         s += '  <CallerReference>%s</CallerReference>\n' % self.caller_reference
         for cname in self.cnames:
             s += '  <CNAME>%s</CNAME>\n' % cname
@@ -138,16 +195,26 @@ class StreamingDistributionConfig(DistributionConfig):
         else:
             s += 'false'
         s += '</Enabled>\n'
+        if self.trusted_signers:
+            s += '<TrustedSigners>\n'
+            for signer in self.trusted_signers:
+                if signer == 'Self':
+                    s += '  <Self/>\n'
+                else:
+                    s += '  <AwsAccountNumber>%s</AwsAccountNumber>\n' % signer
+            s += '</TrustedSigners>\n'
+        if self.logging:
+            s += '<Logging>\n'
+            s += '  <Bucket>%s</Bucket>\n' % self.logging.bucket
+            s += '  <Prefix>%s</Prefix>\n' % self.logging.prefix
+            s += '</Logging>\n'
         s += '</StreamingDistributionConfig>\n'
         return s
-
-    def startElement(self, name, attrs, connection):
-        pass
 
 class DistributionSummary:
 
     def __init__(self, connection=None, domain_name='', id='',
-                 last_modified_time=None, status='', origin='',
+                 last_modified_time=None, status='', origin=None,
                  cname='', comment='', enabled=False):
         self.connection = connection
         self.domain_name = domain_name
@@ -168,6 +235,12 @@ class DistributionSummary:
         if name == 'TrustedSigners':
             self.trusted_signers = TrustedSigners()
             return self.trusted_signers
+        elif name == 'S3Origin':
+            self.origin = S3Origin()
+            return self.origin
+        elif name == 'CustomOrigin':
+            self.origin = CustomOrigin()
+            return self.origin
         return None
 
     def endElement(self, name, value, connection):
@@ -213,9 +286,11 @@ class Distribution:
         self.id = id
         self.last_modified_time = last_modified_time
         self.status = status
+        self.in_progress_invalidation_batches = 0
         self.active_signers = None
         self.etag = None
         self._bucket = None
+        self._object_class = Object
 
     def startElement(self, name, attrs, connection):
         if name == 'DistributionConfig':
@@ -234,16 +309,21 @@ class Distribution:
             self.last_modified_time = value
         elif name == 'Status':
             self.status = value
+        elif name == 'InProgressInvalidationBatches':
+            self.in_progress_invalidation_batches = int(value)
         elif name == 'DomainName':
             self.domain_name = value
         else:
             setattr(self, name, value)
 
-    def update(self, enabled=None, cnames=None, comment=None,
-               origin_access_identity=None,
-               trusted_signers=None):
+    def update(self, enabled=None, cnames=None, comment=None):
         """
-        Update the configuration of the Distribution.
+        Update the configuration of the Distribution.  The only values
+        of the DistributionConfig that can be updated are:
+
+         * CNAMES
+         * Comment
+         * Whether the Distribution is enabled or not
 
         :type enabled: bool
         :param enabled: Whether the Distribution is active or not.
@@ -255,32 +335,18 @@ class Distribution:
         :type comment: str or unicode
         :param comment: The comment associated with the Distribution.
 
-        :type origin_access_identity: :class:`boto.cloudfront.identity.OriginAccessIdentity`
-        :param origin_access_identity: The CloudFront origin access identity
-                                       associated with the distribution.  This
-                                       must be provided if you want the
-                                       distribution to serve private content.
-
-        :type trusted_signers: :class:`boto.cloudfront.signers.TrustedSigner`
-        :param trusted_signers: The AWS users who are authorized to sign
-                                URL's for private content in this Distribution.
-
         """
         new_config = DistributionConfig(self.connection, self.config.origin,
                                         self.config.enabled, self.config.caller_reference,
                                         self.config.cnames, self.config.comment,
-                                        self.config.origin_access_identity,
-                                        self.config.trusted_signers)
+                                        self.config.trusted_signers,
+                                        self.config.default_root_object)
         if enabled != None:
             new_config.enabled = enabled
         if cnames != None:
             new_config.cnames = cnames
         if comment != None:
             new_config.comment = comment
-        if origin_access_identity != None:
-            new_config.origin_access_identity = origin_access_identity
-        if trusted_signers:
-            new_config.trusted_signers = trusted_signers
         self.etag = self.connection.set_distribution_config(self.id, self.etag, new_config)
         self.config = new_config
         self._object_class = Object
@@ -309,7 +375,7 @@ class Distribution:
 
     def _get_bucket(self):
         if not self._bucket:
-            bucket_name = self.config.origin.split('.')[0]
+            bucket_name = self.config.origin.replace('.s3.amazonaws.com', '')
             from boto.s3.connection import S3Connection
             s3 = S3Connection(self.connection.aws_access_key_id,
                               self.connection.aws_secret_access_key,
@@ -355,16 +421,17 @@ class Distribution:
                         READ permission to the Origin Access Identity.
 
         """
-        if self.config.origin_access_identity:
-            id = self.config.origin_access_identity.split('/')[-1]
-            oai = self.connection.get_origin_access_identity_info(id)
-            policy = object.get_acl()
-            if replace:
-                policy.acl = ACL()
-            policy.acl.add_user_grant('READ', oai.s3_user_id)
-            object.set_acl(policy)
-        else:
-            object.set_canned_acl('public-read')
+        if isinstance(self.config.origin, S3Origin):
+            if self.config.origin.origin_access_identity:
+                id = self.config.origin.origin_access_identity.split('/')[-1]
+                oai = self.connection.get_origin_access_identity_info(id)
+                policy = object.get_acl()
+                if replace:
+                    policy.acl = ACL()
+                policy.acl.add_user_grant('READ', oai.s3_user_id)
+                object.set_acl(policy)
+            else:
+                object.set_canned_acl('public-read')
 
     def set_permissions_all(self, replace=False):
         """
@@ -381,7 +448,7 @@ class Distribution:
         """
         bucket = self._get_bucket()
         for key in bucket:
-            self.set_permissions(key)
+            self.set_permissions(key, replace)
 
     def add_object(self, name, content, headers=None, replace=True):
         """
@@ -429,14 +496,19 @@ class StreamingDistribution(Distribution):
             self.config = StreamingDistributionConfig()
             return self.config
         else:
-            return None
+            return Distribution.startElement(self, name, attrs, connection)
 
     def update(self, enabled=None, cnames=None, comment=None):
         """
-        Update the configuration of the Distribution.
+        Update the configuration of the StreamingDistribution.  The only values
+        of the StreamingDistributionConfig that can be updated are:
+
+         * CNAMES
+         * Comment
+         * Whether the Distribution is enabled or not
 
         :type enabled: bool
-        :param enabled: Whether the Distribution is active or not.
+        :param enabled: Whether the StreamingDistribution is active or not.
 
         :type cnames: list of str
         :param cnames: The DNS CNAME's associated with this
@@ -451,18 +523,19 @@ class StreamingDistribution(Distribution):
                                                  self.config.enabled,
                                                  self.config.caller_reference,
                                                  self.config.cnames,
-                                                 self.config.comment)
+                                                 self.config.comment,
+                                                 self.config.trusted_signers)
         if enabled != None:
             new_config.enabled = enabled
         if cnames != None:
             new_config.cnames = cnames
         if comment != None:
             new_config.comment = comment
-            
         self.etag = self.connection.set_streaming_distribution_config(self.id,
                                                                       self.etag,
                                                                       new_config)
         self.config = new_config
+        self._object_class = StreamingObject
 
     def delete(self):
         self.connection.delete_streaming_distribution(self.id, self.etag)
