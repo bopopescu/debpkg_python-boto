@@ -20,12 +20,6 @@
 # IN THE SOFTWARE.
 #
 
-import boto
-
-boto.check_extensions(__name__, __path__)
-
-from queue import Queue
-from message import Message, MHMessage, EncodedMHMessage
 from regioninfo import SQSRegionInfo
 
 def regions():
@@ -35,12 +29,20 @@ def regions():
     :rtype: list
     :return: A list of :class:`boto.ec2.regioninfo.RegionInfo`
     """
-    return [SQSRegionInfo(name='us-east-1', endpoint='queue.amazonaws.com'),
-            SQSRegionInfo(name='eu-west-1', endpoint='eu-west-1.queue.amazonaws.com'),
-            SQSRegionInfo(name='us-west-1', endpoint='us-west-1.queue.amazonaws.com')]
+    return [SQSRegionInfo(name='us-east-1',
+                          endpoint='queue.amazonaws.com'),
+            SQSRegionInfo(name='eu-west-1',
+                          endpoint='eu-west-1.queue.amazonaws.com'),
+            SQSRegionInfo(name='us-west-1',
+                          endpoint='us-west-1.queue.amazonaws.com'),
+            SQSRegionInfo(name='ap-northeast-1',
+                          endpoint='ap-northeast-1.queue.amazonaws.com'),
+            SQSRegionInfo(name='ap-southeast-1',
+                          endpoint='ap-southeast-1.queue.amazonaws.com')
+            ]
 
-def connect_to_region(region_name):
+def connect_to_region(region_name, **kw_params):
     for region in regions():
         if region.name == region_name:
-            return region.connect()
+            return region.connect(**kw_params)
     return None

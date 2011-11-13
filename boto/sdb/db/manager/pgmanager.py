@@ -22,8 +22,10 @@ from boto.sdb.db.key import Key
 from boto.sdb.db.model import Model
 import psycopg2
 import psycopg2.extensions
-import uuid, sys, os, string
-from boto.exception import *
+import uuid
+import os
+import string
+from boto.exception import SDBPersistenceError
 
 psycopg2.extensions.register_type(psycopg2.extensions.UNICODE)
 
@@ -286,7 +288,7 @@ class PGManager(object):
                 qs += "%s=" % name
                 qs += "%s"
         if not found:
-            raise SDBPersistenceError('%s is not a valid field' % key)
+            raise SDBPersistenceError('%s is not a valid field' % name)
         qs += ';'
         print qs
         self.cursor.execute(qs, values)
@@ -313,7 +315,7 @@ class PGManager(object):
                         value = self.encode_value(property, value)
                         parts.append(""""%s"%s'%s'""" % (name, op, value))
                 if not found:
-                    raise SDBPersistenceError('%s is not a valid field' % key)
+                    raise SDBPersistenceError('%s is not a valid field' % name)
             qs += ','.join(parts)
         qs += ';'
         print qs
@@ -359,7 +361,7 @@ class PGManager(object):
     def _find_calculated_props(self, obj):
         return [p for p in obj.properties() if hasattr(p, 'calculated_type')]
 
-    def save_object(self, obj):
+    def save_object(self, obj, expected_value=None):
         obj._auto_update = False
         calculated = self._find_calculated_props(obj)
         if not obj.id:
