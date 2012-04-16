@@ -28,7 +28,7 @@ from boto.sdb.db.model import Model
 from boto.sdb.db.blob import Blob
 from boto.sdb.db.property import ListProperty, MapProperty
 from datetime import datetime, date, time
-from boto.exception import SDBPersistenceError
+from boto.exception import SDBPersistenceError, S3ResponseError
 
 ISO8601 = '%Y-%m-%dT%H:%M:%SZ'
 
@@ -257,12 +257,26 @@ class SDBConverter(object):
     def encode_datetime(self, value):
         if isinstance(value, str) or isinstance(value, unicode):
             return value
-        return value.strftime(ISO8601)
+        if isinstance(value, datetime):
+            return value.strftime(ISO8601)
+        else:
+            return value.isoformat()
 
     def decode_datetime(self, value):
+        """Handles both Dates and DateTime objects"""
+        if value is None:
+            return value
         try:
-            return datetime.strptime(value, ISO8601)
-        except:
+            if "T" in value:
+                if "." in value:
+                    # Handle true "isoformat()" dates, which may have a microsecond on at the end of them
+                    return datetime.strptime(value.split(".")[0], "%Y-%m-%dT%H:%M:%S")
+                else:
+                    return datetime.strptime(value, ISO8601)
+            else:
+                value = value.split("-")
+                return date(int(value[0]), int(value[1]), int(value[2]))
+        except Exception, e:
             return None
 
     def encode_date(self, value):
@@ -340,7 +354,12 @@ class SDBConverter(object):
         if match:
             s3 = self.manager.get_s3_connection()
             bucket = s3.get_bucket(match.group(1), validate=False)
-            key = bucket.get_key(match.group(2))
+            try:
+                key = bucket.get_key(match.group(2))
+            except S3ResponseError, e:
+                if e.reason != "Forbidden":
+                    raise
+                return None
         else:
             return None
         if key:
@@ -536,16 +555,26 @@ class SDBManager(object):
         """
         import types
         query_parts = []
+
         order_by_filtered = False
+
         if order_by:
             if order_by[0] == "-":
                 order_by_method = "DESC";
                 order_by = order_by[1:]
             else:
                 order_by_method = "ASC";
+
+        if select:
+            if order_by and order_by in select:
+                order_by_filtered = True
+            query_parts.append("(%s)" % select)
+
         if isinstance(filters, str) or isinstance(filters, unicode):
             query = "WHERE %s AND `__type__` = '%s'" % (filters, cls.__name__)
-            if order_by != None:
+            if order_by in ["__id__", "itemName()"]:
+                query += " ORDER BY itemName() %s" % order_by_method
+            elif order_by != None:
                 query += " ORDER BY `%s` %s" % (order_by, order_by_method)
             return query
 
@@ -587,13 +616,14 @@ class SDBManager(object):
         query_parts.append(type_query)
 
         order_by_query = ""
+
         if order_by:
             if not order_by_filtered:
                 query_parts.append("`%s` LIKE '%%'" % order_by)
-            order_by_query = " ORDER BY `%s` %s" % (order_by, order_by_method)
-
-        if select:
-            query_parts.append("(%s)" % select)
+            if order_by in ["__id__", "itemName()"]:
+                order_by_query = " ORDER BY itemName() %s" % order_by_method
+            else:
+                order_by_query = " ORDER BY `%s` %s" % (order_by, order_by_method)
 
         if len(query_parts) > 0:
             return "WHERE %s %s" % (" AND ".join(query_parts), order_by_query)
@@ -654,6 +684,7 @@ class SDBManager(object):
         self.domain.delete_attributes(obj.id)
 
     def set_property(self, prop, obj, name, value):
+        setattr(obj, name, value)
         value = prop.get_value_for_datastore(obj)
         value = self.encode_value(prop, value)
         if prop.unique:

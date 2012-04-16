@@ -85,12 +85,13 @@ class BotoServerError(StandardError):
             try:
                 h = handler.XmlHandler(self, self)
                 xml.sax.parseString(self.body, h)
-            except xml.sax.SAXParseException, pe:
-                # Go ahead and clean up anything that may have
-                # managed to get into the error data so we
-                # don't get partial garbage.
-                print "Warning: failed to parse error message from AWS: %s" % pe
-                self._cleanupParsedProperties()
+            except (TypeError, xml.sax.SAXParseException), pe:
+                # Remove unparsable message body so we don't include garbage
+                # in exception. But first, save self.body in self.error_message
+                # because occasionally we get error messages from Eucalyptus
+                # that are just text strings that we want to preserve.
+                self.error_message = self.body
+                self.body = None
 
     def __getattr__(self, name):
         if name == 'message':
@@ -296,6 +297,30 @@ class EC2ResponseError(BotoServerError):
         self._errorResultSet = []
         for p in ('errors'):
             setattr(self, p, None)
+
+class DynamoDBResponseError(BotoServerError):
+    """
+    This exception expects the fully parsed and decoded JSON response
+    body to be passed as the body parameter.
+
+    :ivar status: The HTTP status code.
+    :ivar reason: The HTTP reason message.
+    :ivar body: The Python dict that represents the decoded JSON
+        response body.
+    :ivar error_message: The full description of the AWS error encountered.
+    :ivar error_code: A short string that identifies the AWS error
+        (e.g. ConditionalCheckFailedException)
+    """
+
+    def __init__(self, status, reason, body=None, *args):
+        self.status = status
+        self.reason = reason
+        self.body = body
+        if self.body:
+            self.error_message = self.body.get('message', None)
+            self.error_code = self.body.get('__type', None)
+            if self.error_code:
+                self.error_code = self.error_code.split('#')[-1]
 
 class EmrResponseError(BotoServerError):
     """
