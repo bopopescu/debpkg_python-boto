@@ -1,5 +1,6 @@
 python-boto (2.3.0-1) unstable; urgency=low
 
+  * New upstream release (Closes: #664478)
   * Update debian/watch for Boto's move to Github.  Thanks Scott
     Moser. (Closes: #650480)
 
