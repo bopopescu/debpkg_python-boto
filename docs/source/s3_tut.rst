@@ -20,8 +20,8 @@ At this point the variable conn will point to an S3Connection object.  In
 this example, the AWS access key and AWS secret key are passed in to the
 method explicitely.  Alternatively, you can set the environment variables:
 
-AWS_ACCESS_KEY_ID - Your AWS Access Key ID
-AWS_SECRET_ACCESS_KEY - Your AWS Secret Access Key
+* `AWS_ACCESS_KEY_ID` - Your AWS Access Key ID
+* `AWS_SECRET_ACCESS_KEY` - Your AWS Secret Access Key
 
 and then call the constructor without any arguments, like this:
 
@@ -168,6 +168,7 @@ S3.  There are two ways to set the ACL for an object:
 
 2. Use a "canned" access control policy.  There are four canned policies
    defined:
+
    a. private: Owner gets FULL_CONTROL.  No one else has any access rights.
    b. public-read: Owners gets FULL_CONTROL and the anonymous principal is granted READ access.
    c. public-read-write: Owner gets FULL_CONTROL and the anonymous principal is granted READ and WRITE access.
@@ -203,7 +204,7 @@ by S3 and creates a set of Python objects that represent the ACL.
 [<boto.acl.Grant instance at 0x2e6a08>]
 >>> for grant in acp.acl.grants:
 ...   print grant.permission, grant.display_name, grant.email_address, grant.id
-... 
+...
 FULL_CONTROL <boto.user.User instance at 0x2e6a30>
 
 The Python objects representing the ACL can be found in the acl.py module
@@ -237,9 +238,147 @@ with an S3 object.  For example:
 This code associates two metadata key/value pairs with the Key k.  To retrieve
 those values later:
 
->>> k = b.get_key('has_metadata)
+>>> k = b.get_key('has_metadata')
 >>> k.get_metadata('meta1')
 'This is the first metadata value'
 >>> k.get_metadata('meta2')
 'This is the second metadata value'
 >>>
+
+Setting/Getting/Deleting CORS Configuration on a Bucket
+-------------------------------------------------------
+
+Cross-origin resource sharing (CORS) defines a way for client web
+applications that are loaded in one domain to interact with resources
+in a different domain. With CORS support in Amazon S3, you can build
+rich client-side web applications with Amazon S3 and selectively allow
+cross-origin access to your Amazon S3 resources.
+
+To create a CORS configuration and associate it with a bucket:
+
+>>> from boto.s3.cors import CORSConfiguration
+>>> cors_cfg = CORSConfiguration()
+>>> cors_cfg.add_rule(['PUT', 'POST', 'DELETE'], 'https://www.example.com', allowed_header='*', max_age_seconds=3000, expose_header='x-amz-server-side-encryption')
+>>> cors_cfg.add_rule('GET', '*')
+
+The above code creates a CORS configuration object with two rules.
+
+* The first rule allows cross-origin PUT, POST, and DELETE requests from
+  the https://www.example.com/ origin.  The rule also allows all headers
+  in preflight OPTIONS request through the Access-Control-Request-Headers
+  header.  In response to any preflight OPTIONS request, Amazon S3 will
+  return any requested headers.
+* The second rule allows cross-origin GET requests from all origins.
+
+To associate this configuration with a bucket:
+
+>>> import boto
+>>> c = boto.connect_s3()
+>>> bucket = c.lookup('mybucket')
+>>> bucket.set_cors(cors_cfg)
+
+To retrieve the CORS configuration associated with a bucket:
+
+>>> cors_cfg = bucket.get_cors()
+
+And, finally, to delete all CORS configurations from a bucket:
+
+>>> bucket.delete_cors()
+
+Transitioning Objects to Glacier
+--------------------------------
+
+You can configure objects in S3 to transition to Glacier after a period of
+time.  This is done using lifecycle policies.  A lifecycle policy can also
+specify that an object should be deleted after a period of time.  Lifecycle
+configurations are assigned to buckets and require these parameters:
+
+* The object prefix that identifies the objects you are targeting.
+* The action you want S3 to perform on the identified objects.
+* The date (or time period) when you want S3 to perform these actions.
+
+For example, given a bucket ``s3-glacier-boto-demo``, we can first retrieve the
+bucket:
+
+>>> import boto
+>>> c = boto.connect_s3()
+>>> bucket = c.get_bucket('s3-glacier-boto-demo')
+
+Then we can create a lifecycle object.  In our example, we want all objects
+under ``logs/*`` to transition to Glacier 30 days after the object is created.
+
+>>> from boto.s3.lifecycle import Lifecycle, Transition, Rule
+>>> to_glacier = Transition(days=30, storage_class='GLACIER')
+>>> rule = Rule('ruleid', 'logs/', 'Enabled', transition=to_glacier)
+>>> lifecycle = Lifecycle()
+>>> lifecycle.append(rule)
+
+.. note::
+
+  For API docs for the lifecycle objects, see :py:mod:`boto.s3.lifecycle`
+
+We can now configure the bucket with this lifecycle policy:
+
+>>> bucket.configure_lifecycle(lifecycle)
+True
+
+You can also retrieve the current lifecycle policy for the bucket:
+
+>>> current = bucket.get_lifecycle_config()
+>>> print current[0].transition
+<Transition: in: 30 days, GLACIER>
+
+When an object transitions to Glacier, the storage class will be
+updated.  This can be seen when you **list** the objects in a bucket:
+
+>>> for key in bucket.list():
+...   print key, key.storage_class
+...
+<Key: s3-glacier-boto-demo,logs/testlog1.log> GLACIER
+
+You can also use the prefix argument to the ``bucket.list`` method:
+
+>>> print list(b.list(prefix='logs/testlog1.log'))[0].storage_class
+u'GLACIER'
+
+
+Restoring Objects from Glacier
+------------------------------
+
+Once an object has been transitioned to Glacier, you can restore the object
+back to S3.  To do so, you can use the :py:meth:`boto.s3.key.Key.restore`
+method of the key object.
+The ``restore`` method takes an integer that specifies the number of days
+to keep the object in S3.
+
+>>> import boto
+>>> c = boto.connect_s3()
+>>> bucket = c.get_bucket('s3-glacier-boto-demo')
+>>> key = bucket.get_key('logs/testlog1.log')
+>>> key.restore(days=5)
+
+It takes about 4 hours for a restore operation to make a copy of the archive
+available for you to access.  While the object is being restored, the
+``ongoing_restore`` attribute will be set to ``True``:
+
+
+>>> key = bucket.get_key('logs/testlog1.log')
+>>> print key.ongoing_restore
+True
+
+When the restore is finished, this value will be ``False`` and the expiry
+date of the object will be non ``None``:
+
+>>> key = bucket.get_key('logs/testlog1.log')
+>>> print key.ongoing_restore
+False
+>>> print key.expiry_date
+"Fri, 21 Dec 2012 00:00:00 GMT"
+
+
+.. note:: If there is no restore operation either in progress or completed,
+  the ``ongoing_restore`` attribute will be ``None``.
+
+Once the object is restored you can then download the contents:
+
+>>> key.get_contents_to_filename('testlog1.log')

@@ -17,6 +17,8 @@ Currently Supported Services
   * :doc:`Elastic Compute Cloud (EC2) <ec2_tut>` -- (:doc:`API Reference <ref/ec2>`)
   * :doc:`Elastic MapReduce (EMR) <emr_tut>` -- (:doc:`API Reference <ref/emr>`)
   * :doc:`Auto Scaling <autoscale_tut>` -- (:doc:`API Reference <ref/autoscale>`)
+  * Data Pipeline -- (:doc:`API Reference <ref/datapipeline>`)
+  * Elastic Transcoder -- (:doc:`API Reference <ref/elastictranscoder>`)
 
 * **Content Delivery**
 
@@ -27,14 +29,17 @@ Currently Supported Services
   * :doc:`SimpleDB <simpledb_tut>` -- (:doc:`API Reference <ref/sdb>`)
   * :doc:`DynamoDB <dynamodb_tut>` -- (:doc:`API Reference <ref/dynamodb>`)
   * Relational Data Services (RDS) -- (:doc:`API Reference <ref/rds>`)
+  * ElastiCache -- (:doc:`API Reference <ref/elasticache>`)
 
 * **Deployment and Management**
 
   * CloudFormation -- (:doc:`API Reference <ref/cloudformation>`)
+  * Elastic Beanstalk -- (:doc:`API Reference <ref/beanstalk>`)
 
 * **Identity & Access**
 
   * Identity and Access Management (IAM) -- (:doc:`API Reference <ref/iam>`)
+  * Security Token Service (STS) -- (:doc:`API Reference <ref/sts>`)
 
 * **Application Services**
 
@@ -42,6 +47,7 @@ Currently Supported Services
   * :doc:`Simple Queue Service (SQS) <sqs_tut>` -- (:doc:`API Reference <ref/sqs>`)
   * Simple Notification Service (SNS) -- (:doc:`API Reference <ref/sns>`)
   * :doc:`Simple Email Service (SES) <ses_tut>` -- (:doc:`API Reference <ref/ses>`)
+  * :doc:`Cloudsearch <cloudsearch_tut>` -- (:doc:`API Reference <ref/cloudsearch>`)
 
 * **Monitoring**
 
@@ -60,16 +66,22 @@ Currently Supported Services
 * **Storage**
 
   * :doc:`Simple Storage Service (S3) <s3_tut>` -- (:doc:`API Reference <ref/s3>`)
+  * Amazon Glacier -- (:doc:`API Reference <ref/glacier>`)
   * Google Cloud Storage -- (:doc:`API Reference <ref/gs>`)
 
 * **Workforce**
 
   * Mechanical Turk -- (:doc:`API Reference <ref/mturk>`)
 
+* **Other**
+
+  * Marketplace Web Services -- (:doc:`API Reference <ref/mws>`)
+
 Additional Resources
 --------------------
 
 * :doc:`Boto Config Tutorial <boto_config_tut>`
+* :doc:`Contributing to Boto <contributing>`
 * `Boto Source Repository`_
 * `Boto Issue Tracker`_
 * `Boto Twitter`_
@@ -102,11 +114,14 @@ Additional Resources
    ref/rds
    ref/cloudformation
    ref/iam
+   ref/mws
    sqs_tut
    ref/sqs
    ref/sns
    ses_tut
    ref/ses
+   cloudsearch_tut
+   ref/cloudsearch
    cloudwatch_tut
    ref/cloudwatch
    ref/route53
@@ -129,4 +144,3 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`
-
