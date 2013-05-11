@@ -1,3 +1,9 @@
+python-boto (2.9.2-1) unstable; urgency=low
+
+  * New upstream release (Closes: #700743).
+
+ -- Eric Evans <eevans@debian.org>  Fri, 10 May 2013 23:38:14 -0500
+
 python-boto (2.8.0-1) experimental; urgency=low
 
   * Experimental upload of new upstream release.
