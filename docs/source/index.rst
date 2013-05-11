@@ -9,6 +9,13 @@ offered by `Amazon Web Services`_.
 
 .. _Amazon Web Services: http://aws.amazon.com/
 
+Getting Started
+---------------
+
+If you've never used ``boto`` before, you should read the
+:doc:`Getting Started with Boto <getting_started>` guide to get familiar
+with ``boto`` & its usage.
+
 Currently Supported Services
 ----------------------------
 
@@ -28,8 +35,10 @@ Currently Supported Services
 
   * :doc:`SimpleDB <simpledb_tut>` -- (:doc:`API Reference <ref/sdb>`)
   * :doc:`DynamoDB <dynamodb_tut>` -- (:doc:`API Reference <ref/dynamodb>`)
-  * Relational Data Services (RDS) -- (:doc:`API Reference <ref/rds>`)
+  * DynamoDB2 -- (:doc:`API Reference <ref/dynamodb2>`)
+  * :doc:`Relational Data Services (RDS) <rds_tut>` -- (:doc:`API Reference <ref/rds>`)
   * ElastiCache -- (:doc:`API Reference <ref/elasticache>`)
+  * Redshift -- (:doc:`API Reference <ref/redshift>`)
 
 * **Deployment and Management**
 
@@ -76,6 +85,7 @@ Currently Supported Services
 * **Other**
 
   * Marketplace Web Services -- (:doc:`API Reference <ref/mws>`)
+  * :doc:`Support <support_tut>` -- (:doc:`API Reference <ref/support>`)
 
 Additional Resources
 --------------------
@@ -94,9 +104,21 @@ Additional Resources
 .. _IRC channel: http://webchat.freenode.net/?channels=boto
 .. _Follow Mitch on Twitter: http://twitter.com/garnaat
 
+
+Release Notes
+-------------
+
+.. toctree::
+   :titlesonly:
+   :glob:
+
+   releasenotes/*
+
+
 .. toctree::
    :hidden:
 
+   getting_started
    ec2_tut
    security_groups
    ref/ec2
@@ -111,6 +133,7 @@ Additional Resources
    ref/sdb_db
    dynamodb_tut
    ref/dynamodb
+   rds_tut
    ref/rds
    ref/cloudformation
    ref/iam
@@ -136,6 +159,14 @@ Additional Resources
    boto_config_tut
    ref/index
    documentation
+   contributing
+   ref/datapipeline
+   ref/elasticache
+   ref/elastictranscoder
+   ref/redshift
+   ref/dynamodb2
+   support_tut
+   ref/support
 
 
 Indices and tables

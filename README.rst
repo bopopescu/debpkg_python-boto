@@ -1,8 +1,8 @@
 ####
 boto
 ####
-boto 2.8.0
-31-Jan-2013
+boto 2.9.2
+30-Apr-2013
 
 .. image:: https://secure.travis-ci.org/boto/boto.png?branch=develop
         :target: https://secure.travis-ci.org/boto/boto
@@ -137,7 +137,7 @@ Getting Started with Boto
 *************************
 
 Your credentials can be passed into the methods that create
-connections.  Alternatively, boto will check for the existance of the
+connections.  Alternatively, boto will check for the existence of the
 following environment variables to ascertain your credentials:
 
 **AWS_ACCESS_KEY_ID** - Your AWS Access Key ID
