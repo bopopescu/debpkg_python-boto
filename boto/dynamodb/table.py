@@ -335,7 +335,7 @@ class Table(object):
         the hash_key and range_key values of the item.  You can use
         these explicit parameters when calling the method, such as::
 
-        >>> my_item = my_table.new_item(hash_key='a', range_key=1,
+            >>> my_item = my_table.new_item(hash_key='a', range_key=1,
                                         attrs={'key1': 'val1', 'key2': 'val2'})
             >>> my_item
             {u'bar': 1, u'foo': 'a', 'key1': 'val1', 'key2': 'val2'}
@@ -435,6 +435,9 @@ class Table(object):
         :param count: If True, Amazon DynamoDB returns a total
             number of items for the Query operation, even if the
             operation has no matching items for the assigned filter.
+            If count is True, the actual items are not returned and
+            the count is accessible as the ``count`` attribute of
+            the returned object.
 
 
         :type item_class: Class
@@ -494,6 +497,9 @@ class Table(object):
         :param count: If True, Amazon DynamoDB returns a total
             number of items for the Scan operation, even if the
             operation has no matching items for the assigned filter.
+            If count is True, the actual items are not returned and
+            the count is accessible as the ``count`` attribute of
+            the returned object.
 
         :type exclusive_start_key: list or tuple
         :param exclusive_start_key: Primary key of the item from
