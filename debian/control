@@ -19,9 +19,18 @@ Description: Python interface to Amazon's Web Services
  .
  Boto supports the following services:
   * Elastic Compute Cloud (EC2)
-  * SimpleDB
-  * Simple Storage Service (S3)
-  * CloudFront
-  * Simple Queue Service (SQS)
   * Elastic MapReduce
+  * CloudFront
+  * DynamoDB
+  * SimpleDB
   * Relational Database Service (RDS)
+  * Identity and Access Management (IAM)
+  * Simple Queue Service (SQS)
+  * CloudWatch
+  * Route53
+  * Elastic Load Balancing (ELB)
+  * Flexible Payment Service (FPS)
+  * Simple Storage Service (S3)
+  * Glacier
+  * Elastic Block Store (EBS)
+  * and many more...
