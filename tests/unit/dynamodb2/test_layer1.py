@@ -1,4 +1,5 @@
-# Copyright (c) 2013 Amazon.com, Inc. or its affiliates.  All Rights Reserved
+# Copyright (c) 2013 Amazon.com, Inc. or its affiliates.
+# All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -18,33 +19,27 @@
 # WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
-#
-from boto.exception import JSONResponseError
+
+"""
+Tests for Layer1 of DynamoDB v2
+"""
+from tests.unit import unittest
+from boto.dynamodb2.layer1 import DynamoDBConnection
+from boto.regioninfo import RegionInfo
 
 
-class LimitExceededException(JSONResponseError):
-    pass
+class DynamoDBv2Layer1UnitTest(unittest.TestCase):
+    dynamodb = True
 
-
-class ResourceInUseException(JSONResponseError):
-    pass
-
-
-class AccessDeniedException(JSONResponseError):
-    pass
-
-
-class ResourceNotFoundException(JSONResponseError):
-    pass
-
-
-class InternalServiceException(JSONResponseError):
-    pass
-
-
-class ValidationException(JSONResponseError):
-    pass
-
-
-class IncompatibleVersionException(JSONResponseError):
-    pass
+    def test_init_region(self):
+        dynamodb = DynamoDBConnection(
+            aws_access_key_id='aws_access_key_id',
+            aws_secret_access_key='aws_secret_access_key')
+        self.assertEqual(dynamodb.region.name, 'us-east-1')
+        dynamodb = DynamoDBConnection(
+            region=RegionInfo(name='us-west-2',
+                              endpoint='dynamodb.us-west-2.amazonaws.com'),
+            aws_access_key_id='aws_access_key_id',
+            aws_secret_access_key='aws_secret_access_key',
+        )
+        self.assertEqual(dynamodb.region.name, 'us-west-2')
