@@ -1,3 +1,2 @@
 version=3
-opts="uversionmangle=s/(([ab]|rc)[0-9])$/~\1/" \
-    https://github.com/boto/boto/tags /boto/boto/archive/(.*).tar.gz
+https://github.com/boto/boto/tags .*/(\d[\d\.]*)\.tar\.gz
