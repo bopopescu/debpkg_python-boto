@@ -653,6 +653,10 @@ class ItemTestCase(unittest.TestCase):
             date_joined=12345
         )
 
+    def test_nonzero(self):
+        self.assertTrue(self.johndoe)
+        self.assertFalse(self.create_item({}))
+
 
 def fake_results(name, greeting='hello', exclusive_start_key=None, limit=None):
     if exclusive_start_key is None:
@@ -795,6 +799,60 @@ class ResultSetTestCase(unittest.TestCase):
 
         results = ResultSet()
         results.to_call(none, limit=20)
+        self.assertRaises(StopIteration, results.next)
+
+    def test_iteration_sporadic_pages(self):
+        # Some pages have no/incomplete results but have a ``LastEvaluatedKey``
+        # (for instance, scans with filters), so we need to accommodate that.
+        def sporadic():
+            # A dict, because Python closures have read-only access to the
+            # reference itself.
+            count = {'value': -1}
+
+            def _wrapper(limit=10, exclusive_start_key=None):
+                count['value'] = count['value'] + 1
+
+                if count['value'] == 0:
+                    # Full page.
+                    return {
+                        'results': [
+                            'Result #0',
+                            'Result #1',
+                            'Result #2',
+                            'Result #3',
+                        ],
+                        'last_key': 'page-1'
+                    }
+                elif count['value'] == 1:
+                    # Empty page but continue.
+                    return {
+                        'results': [],
+                        'last_key': 'page-2'
+                    }
+                elif count['value'] == 2:
+                    # Final page.
+                    return {
+                        'results': [
+                            'Result #4',
+                            'Result #5',
+                            'Result #6',
+                        ],
+                    }
+
+            return _wrapper
+
+        results = ResultSet()
+        results.to_call(sporadic(), limit=20)
+        # First page
+        self.assertEqual(results.next(), 'Result #0')
+        self.assertEqual(results.next(), 'Result #1')
+        self.assertEqual(results.next(), 'Result #2')
+        self.assertEqual(results.next(), 'Result #3')
+        # Second page (misses!)
+        # Moves on to the third page
+        self.assertEqual(results.next(), 'Result #4')
+        self.assertEqual(results.next(), 'Result #5')
+        self.assertEqual(results.next(), 'Result #6')
         self.assertRaises(StopIteration, results.next)
 
     def test_list(self):
@@ -1232,6 +1290,64 @@ class TableTestCase(unittest.TestCase):
             'username': {'S': 'johndoe'}
         }, consistent_read=False)
 
+    def test_lookup_hash(self):
+        """Tests the "lookup" function with just a hash key"""
+        expected = {
+            'Item': {
+                'username': {'S': 'johndoe'},
+                'first_name': {'S': 'John'},
+                'last_name': {'S': 'Doe'},
+                'date_joined': {'N': '1366056668'},
+                'friend_count': {'N': '3'},
+                'friends': {'SS': ['alice', 'bob', 'jane']},
+            }
+        }
+
+        # Set the Schema
+        self.users.schema = [
+            HashKey('username'),
+            RangeKey('date_joined', data_type=NUMBER),
+        ]
+
+        with mock.patch.object(
+                self.users,
+                'get_item',
+                return_value=expected) as mock_get_item:
+            self.users.lookup('johndoe')
+
+        mock_get_item.assert_called_once_with(
+            username= 'johndoe')
+
+    def test_lookup_hash_and_range(self):
+        """Test the "lookup" function with a hash and range key"""
+        expected = {
+            'Item': {
+                'username': {'S': 'johndoe'},
+                'first_name': {'S': 'John'},
+                'last_name': {'S': 'Doe'},
+                'date_joined': {'N': '1366056668'},
+                'friend_count': {'N': '3'},
+                'friends': {'SS': ['alice', 'bob', 'jane']},
+            }
+        }
+
+        # Set the Schema
+        self.users.schema = [
+            HashKey('username'),
+            RangeKey('date_joined', data_type=NUMBER),
+        ]
+
+        with mock.patch.object(
+                self.users,
+                'get_item',
+                return_value=expected) as mock_get_item:
+            self.users.lookup('johndoe', 1366056668)
+
+        mock_get_item.assert_called_once_with(
+            username= 'johndoe',
+            date_joined= 1366056668)
+
+
     def test_put_item(self):
         with mock.patch.object(
                 self.users.connection,
@@ -1476,6 +1592,89 @@ class TableTestCase(unittest.TestCase):
 
         self.assertEqual(mock_batch.call_count, 2)
 
+    def test_batch_write_unprocessed_items(self):
+        unprocessed = {
+            'UnprocessedItems': {
+                'users': [
+                    {
+                        'PutRequest': {
+                            'username': {
+                                'S': 'jane',
+                            },
+                            'date_joined': {
+                                'N': 12342547
+                            }
+                        },
+                    },
+                ],
+            },
+        }
+
+        # Test enqueuing the unprocessed bits.
+        with mock.patch.object(
+                self.users.connection,
+                'batch_write_item',
+                return_value=unprocessed) as mock_batch:
+            with self.users.batch_write() as batch:
+                self.assertEqual(len(batch._unprocessed), 0)
+
+                # Trash the ``resend_unprocessed`` method so that we don't
+                # infinite loop forever here.
+                batch.resend_unprocessed = lambda: True
+
+                batch.put_item(data={
+                    'username': 'jane',
+                    'date_joined': 12342547
+                })
+                batch.delete_item(username='johndoe')
+                batch.put_item(data={
+                    'username': 'alice',
+                    'date_joined': 12342888
+                })
+
+            self.assertEqual(len(batch._unprocessed), 1)
+
+        # Now test resending those unprocessed items.
+        with mock.patch.object(
+                self.users.connection,
+                'batch_write_item',
+                return_value={}) as mock_batch:
+            with self.users.batch_write() as batch:
+                self.assertEqual(len(batch._unprocessed), 0)
+
+                # Toss in faked unprocessed items, as though a previous batch
+                # had failed.
+                batch._unprocessed = [
+                    {
+                        'PutRequest': {
+                            'username': {
+                                'S': 'jane',
+                            },
+                            'date_joined': {
+                                'N': 12342547
+                            }
+                        },
+                    },
+                ]
+
+                batch.put_item(data={
+                    'username': 'jane',
+                    'date_joined': 12342547
+                })
+                batch.delete_item(username='johndoe')
+                batch.put_item(data={
+                    'username': 'alice',
+                    'date_joined': 12342888
+                })
+
+                # Flush, to make sure everything has been processed.
+                # Unprocessed items should still be hanging around.
+                batch.flush()
+                self.assertEqual(len(batch._unprocessed), 1)
+
+            # Post-exit, this should be emptied.
+            self.assertEqual(len(batch._unprocessed), 0)
+
     def test__build_filters(self):
         filters = self.users._build_filters({
             'username__eq': 'johndoe',
@@ -1503,7 +1702,12 @@ class TableTestCase(unittest.TestCase):
                 'ComparisonOperator': 'GE',
             },
             'age': {
-                'AttributeValueList': [{'NS': ['32', '33', '30', '31']}],
+                'AttributeValueList': [
+                    {'N': '30'},
+                    {'N': '31'},
+                    {'N': '32'},
+                    {'N': '33'},
+                ],
                 'ComparisonOperator': 'IN',
             },
             'last_name': {
