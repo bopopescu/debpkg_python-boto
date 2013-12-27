@@ -3,6 +3,7 @@ Section: python
 Priority: optional
 Maintainer: Eric Evans <eevans@debian.org>
 Build-Depends: debhelper (>= 7), python-all (>= 2.6.6-3)
+XS-Testsuite: autopkgtest
 X-Python-Version: >= 2.5
 Homepage: https://github.com/boto/boto
 Vcs-Git: git://git.debian.org/git/users/eevans/python-boto
