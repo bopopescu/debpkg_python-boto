@@ -1229,6 +1229,24 @@ class TestRegisterImage(TestEC2ConnectionBase):
             'Version'
         ])
 
+    def test_sriov_net_support_simple(self):
+        self.set_http_response(status_code=200)
+        self.ec2.register_image('name', 'description',
+                                image_location='s3://foo',
+                                sriov_net_support='simple')
+
+        self.assert_request_parameters({
+            'Action': 'RegisterImage',
+            'ImageLocation': 's3://foo',
+            'Name': 'name',
+            'Description': 'description',
+            'SriovNetSupport': 'simple'
+        }, ignore_params_values=[
+            'AWSAccessKeyId', 'SignatureMethod',
+            'SignatureVersion', 'Timestamp',
+            'Version'
+        ])
+
 
 class TestTerminateInstances(TestEC2ConnectionBase):
     def default_body(self):
@@ -1311,6 +1329,75 @@ class TestDescribeTags(TestEC2ConnectionBase):
              ignore_params_values=['AWSAccessKeyId', 'SignatureMethod',
                                    'SignatureVersion', 'Timestamp', 'Version'])
 
+
+class TestSignatureAlteration(TestEC2ConnectionBase):
+    def test_unchanged(self):
+        self.assertEqual(
+            self.service_connection._required_auth_capability(),
+            ['ec2']
+        )
+
+    def test_switched(self):
+        region = RegionInfo(
+            name='cn-north-1',
+            endpoint='ec2.cn-north-1.amazonaws.com.cn',
+            connection_cls=EC2Connection
+        )
+
+        conn = self.connection_class(
+            aws_access_key_id='less',
+            aws_secret_access_key='more',
+            region=region
+        )
+        self.assertEqual(
+            conn._required_auth_capability(),
+            ['hmac-v4']
+        )
+
+
+class TestAssociateAddress(TestEC2ConnectionBase):
+    def default_body(self):
+        return """
+            <AssociateAddressResponse xmlns="http://ec2.amazonaws.com/doc/2013-10-15/">
+               <requestId>59dbff89-35bd-4eac-99ed-be587EXAMPLE</requestId>
+               <return>true</return>
+               <associationId>eipassoc-fc5ca095</associationId>
+            </AssociateAddressResponse>
+        """
+
+    def test_associate_address(self):
+        self.set_http_response(status_code=200)
+        result = self.ec2.associate_address(instance_id='i-1234',
+                                            public_ip='192.0.2.1')
+        self.assertEqual(True, result)
+
+    def test_associate_address_object(self):
+        self.set_http_response(status_code=200)
+        result = self.ec2.associate_address_object(instance_id='i-1234',
+                                                   public_ip='192.0.2.1')
+        self.assertEqual('eipassoc-fc5ca095', result.association_id)
+
+
+class TestAssociateAddressFail(TestEC2ConnectionBase):
+    def default_body(self):
+        return """
+            <Response>
+                <Errors>
+                     <Error>
+                       <Code>InvalidInstanceID.NotFound</Code>
+                       <Message>The instance ID 'i-4cbc822a' does not exist</Message>
+                     </Error>
+                </Errors>
+                <RequestID>ea966190-f9aa-478e-9ede-cb5432daacc0</RequestID>
+                <StatusCode>Failure</StatusCode>
+            </Response>
+        """
+
+    def test_associate_address(self):
+        self.set_http_response(status_code=200)
+        result = self.ec2.associate_address(instance_id='i-1234',
+                                            public_ip='192.0.2.1')
+        self.assertEqual(False, result)
 
 
 if __name__ == '__main__':
