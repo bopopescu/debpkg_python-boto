@@ -31,20 +31,10 @@ from boto.ec2.elb.loadbalancer import LoadBalancer, LoadBalancerZones
 from boto.ec2.elb.instancestate import InstanceState
 from boto.ec2.elb.healthcheck import HealthCheck
 from boto.ec2.elb.listelement import ListElement
-from boto.regioninfo import RegionInfo
+from boto.regioninfo import RegionInfo, get_regions, load_regions
 import boto
 
-RegionData = {
-    'us-east-1': 'elasticloadbalancing.us-east-1.amazonaws.com',
-    'us-gov-west-1': 'elasticloadbalancing.us-gov-west-1.amazonaws.com',
-    'us-west-1': 'elasticloadbalancing.us-west-1.amazonaws.com',
-    'us-west-2': 'elasticloadbalancing.us-west-2.amazonaws.com',
-    'sa-east-1': 'elasticloadbalancing.sa-east-1.amazonaws.com',
-    'eu-west-1': 'elasticloadbalancing.eu-west-1.amazonaws.com',
-    'ap-northeast-1': 'elasticloadbalancing.ap-northeast-1.amazonaws.com',
-    'ap-southeast-1': 'elasticloadbalancing.ap-southeast-1.amazonaws.com',
-    'ap-southeast-2': 'elasticloadbalancing.ap-southeast-2.amazonaws.com',
-}
+RegionData = load_regions().get('elasticloadbalancing', {})
 
 
 def regions():
@@ -54,13 +44,7 @@ def regions():
     :rtype: list
     :return: A list of :class:`boto.RegionInfo` instances
     """
-    regions = []
-    for region_name in RegionData:
-        region = RegionInfo(name=region_name,
-                            endpoint=RegionData[region_name],
-                            connection_cls=ELBConnection)
-        regions.append(region)
-    return regions
+    return get_regions('elasticloadbalancing', connection_cls=ELBConnection)
 
 
 def connect_to_region(region_name, **kw_params):
@@ -91,7 +75,7 @@ class ELBConnection(AWSQueryConnection):
                  is_secure=True, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None, debug=0,
                  https_connection_factory=None, region=None, path='/',
-                 security_token=None, validate_certs=True):
+                 security_token=None, validate_certs=True, profile_name=None):
         """
         Init method to create a new connection to EC2 Load Balancing Service.
 
@@ -102,20 +86,21 @@ class ELBConnection(AWSQueryConnection):
             region = RegionInfo(self, self.DefaultRegionName,
                                 self.DefaultRegionEndpoint)
         self.region = region
-        AWSQueryConnection.__init__(self, aws_access_key_id,
+        super(ELBConnection, self).__init__(aws_access_key_id,
                                     aws_secret_access_key,
                                     is_secure, port, proxy, proxy_port,
                                     proxy_user, proxy_pass,
                                     self.region.endpoint, debug,
                                     https_connection_factory, path,
                                     security_token,
-                                    validate_certs=validate_certs)
+                                    validate_certs=validate_certs,
+                                    profile_name=profile_name)
 
     def _required_auth_capability(self):
         return ['ec2']
 
     def build_list_params(self, params, items, label):
-        if isinstance(items, str):
+        if isinstance(items, basestring):
             items = [items]
         for index, item in enumerate(items):
             params[label % (index + 1)] = item

@@ -35,7 +35,7 @@ class ResourceRecordSets(ResultSet):
     """
 
     ChangeResourceRecordSetsBody = """<?xml version="1.0" encoding="UTF-8"?>
-    <ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2012-02-29/">
+    <ChangeResourceRecordSetsRequest xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
             <ChangeBatch>
                 <Comment>%(comment)s</Comment>
                 <Changes>%(changes)s</Changes>
@@ -54,7 +54,7 @@ class ResourceRecordSets(ResultSet):
         self.changes = []
         self.next_record_name = None
         self.next_record_type = None
-        ResultSet.__init__(self, [('ResourceRecordSet', Record)])
+        super(ResourceRecordSets, self).__init__([('ResourceRecordSet', Record)])
 
     def __repr__(self):
         if self.changes:
@@ -71,7 +71,7 @@ class ResourceRecordSets(ResultSet):
         Add a change request to the set.
 
         :type action: str
-        :param action: The action to perform ('CREATE'|'DELETE')
+        :param action: The action to perform ('CREATE'|'DELETE'|'UPSERT')
 
         :type name: str
         :param name: The name of the domain you want to perform the action on.
@@ -156,11 +156,11 @@ class ResourceRecordSets(ResultSet):
         elif name == 'NextRecordType':
             self.next_record_type = value
         else:
-            return ResultSet.endElement(self, name, value, connection)
+            return super(ResourceRecordSets, self).endElement(name, value, connection)
 
     def __iter__(self):
         """Override the next function to support paging"""
-        results = ResultSet.__iter__(self)
+        results = super(ResourceRecordSets, self).__iter__()
         truncated = self.is_truncated
         while results:
             for obj in results:
@@ -218,7 +218,7 @@ class Record(object):
         self.name = name
         self.type = type
         self.ttl = ttl
-        if resource_records == None:
+        if resource_records is None:
             resource_records = []
         self.resource_records = resource_records
         self.alias_hosted_zone_id = alias_hosted_zone_id
@@ -241,7 +241,7 @@ class Record(object):
 
     def to_xml(self):
         """Spit this resource record set out as XML"""
-        if self.alias_hosted_zone_id != None and self.alias_dns_name != None:
+        if self.alias_hosted_zone_id is not None and self.alias_dns_name is not None:
             # Use alias
             body = self.AliasBody % (self.alias_hosted_zone_id, self.alias_dns_name)
         else:
@@ -258,10 +258,10 @@ class Record(object):
 
         weight = ""
 
-        if self.identifier != None and self.weight != None:
+        if self.identifier is not None and self.weight is not None:
             weight = self.WRRBody % {"identifier": self.identifier, "weight":
                     self.weight}
-        elif self.identifier != None and self.region != None:
+        elif self.identifier is not None and self.region is not None:
             weight = self.RRRBody % {"identifier": self.identifier, "region":
                     self.region}
 
@@ -275,16 +275,16 @@ class Record(object):
 
     def to_print(self):
         rr = ""
-        if self.alias_hosted_zone_id != None and self.alias_dns_name != None:
+        if self.alias_hosted_zone_id is not None and self.alias_dns_name is not None:
             # Show alias
             rr = 'ALIAS ' + self.alias_hosted_zone_id + ' ' + self.alias_dns_name
         else:
             # Show resource record(s)
             rr =  ",".join(self.resource_records)
 
-        if self.identifier != None and self.weight != None:
+        if self.identifier is not None and self.weight is not None:
             rr += ' (WRR id=%s, w=%s)' % (self.identifier, self.weight)
-        elif self.identifier != None and self.region != None:
+        elif self.identifier is not None and self.region is not None:
             rr += ' (LBR id=%s, region=%s)' % (self.identifier, self.region)
 
         return rr

@@ -24,6 +24,7 @@ Currently Supported Services
   * :doc:`Elastic Compute Cloud (EC2) <ec2_tut>` -- (:doc:`API Reference <ref/ec2>`)
   * :doc:`Elastic MapReduce (EMR) <emr_tut>` -- (:doc:`API Reference <ref/emr>`)
   * :doc:`Auto Scaling <autoscale_tut>` -- (:doc:`API Reference <ref/autoscale>`)
+  * Kinesis -- (:doc:`API Reference <ref/kinesis>`)
 
 * **Content Delivery**
 
@@ -66,7 +67,7 @@ Currently Supported Services
 
 * **Networking**
 
-  * Route 53 -- (:doc:`API Reference <ref/route53>`)
+  * :doc:`Route 53 <route53_tut>` -- (:doc:`API Reference <ref/route53>`)
   * :doc:`Virtual Private Cloud (VPC) <vpc_tut>` -- (:doc:`API Reference <ref/vpc>`)
   * :doc:`Elastic Load Balancing (ELB) <elb_tut>` -- (:doc:`API Reference <ref/elb>`)
 
@@ -115,6 +116,14 @@ Release Notes
 .. toctree::
    :titlesonly:
 
+   releasenotes/v2.25.0
+   releasenotes/v2.24.0
+   releasenotes/v2.23.0
+   releasenotes/v2.22.1
+   releasenotes/v2.22.0
+   releasenotes/v2.21.2
+   releasenotes/v2.21.1
+   releasenotes/v2.21.0
    releasenotes/v2.20.1
    releasenotes/v2.20.0
    releasenotes/v2.19.0
@@ -177,6 +186,7 @@ Release Notes
    vpc_tut
    elb_tut
    s3_tut
+   route53_tut
    boto_config_tut
    documentation
    contributing

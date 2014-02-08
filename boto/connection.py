@@ -423,7 +423,7 @@ class AWSAuthConnection(object):
                  https_connection_factory=None, path='/',
                  provider='aws', security_token=None,
                  suppress_consec_slashes=True,
-                 validate_certs=True):
+                 validate_certs=True, profile_name=None):
         """
         :type host: str
         :param host: The host to make the connection to
@@ -434,6 +434,10 @@ class AWSAuthConnection(object):
         :keyword str aws_secret_access_key: Your AWS Secret Access Key
             (provided by Amazon). If none is specified, the value in your
             ``AWS_SECRET_ACCESS_KEY`` environmental variable is used.
+        :keyword str security_token: The security token associated with
+            temporary credentials issued by STS.  Optional unless using
+            temporary credentials.  If none is specified, the environment
+            variable ``AWS_SECURITY_TOKEN`` is used if defined.
 
         :type is_secure: boolean
         :param is_secure: Whether the connection is over SSL
@@ -464,6 +468,10 @@ class AWSAuthConnection(object):
         :type validate_certs: bool
         :param validate_certs: Controls whether SSL certificates
             will be validated or not.  Defaults to True.
+
+        :type profile_name: str
+        :param profile_name: Override usual Credentials section in config
+            file to use a named set of keys instead.
         """
         self.suppress_consec_slashes = suppress_consec_slashes
         self.num_retries = 6
@@ -542,7 +550,8 @@ class AWSAuthConnection(object):
             self.provider = Provider(self._provider_type,
                                      aws_access_key_id,
                                      aws_secret_access_key,
-                                     security_token)
+                                     security_token,
+                                     profile_name)
 
         # Allow config file to override default host, port, and host header.
         if self.provider.host:
@@ -598,6 +607,10 @@ class AWSAuthConnection(object):
     aws_secret_access_key = property(aws_secret_access_key)
     gs_secret_access_key = aws_secret_access_key
     secret_key = aws_secret_access_key
+
+    def profile_name(self):
+        return self.provider.profile_name
+    profile_name = property(profile_name)
 
     def get_path(self, path='/'):
         # The default behavior is to suppress consecutive slashes for reasons
@@ -680,7 +693,7 @@ class AWSAuthConnection(object):
             self.proxy_port = self.port
 
         self.no_proxy = os.environ.get('no_proxy', '') or os.environ.get('NO_PROXY', '')
-        self.use_proxy = (self.proxy != None)
+        self.use_proxy = (self.proxy is not None)
 
     def get_http_connection(self, host, port, is_secure):
         conn = self._pool.get_http_connection(host, port, is_secure)
@@ -887,8 +900,8 @@ class AWSAuthConnection(object):
                 # the port info. All others should be now be up to date and
                 # not include the port.
                 if 's3' not in self._required_auth_capability():
-                    self.set_host_header(request)
-                    
+                    if not getattr(self, 'anon', False):
+                        self.set_host_header(request)
                 if callable(sender):
                     response = sender(connection, request.method, request.path,
                                       request.body, request.headers)
@@ -982,11 +995,11 @@ class AWSAuthConnection(object):
         path = self.get_path(path)
         if auth_path is not None:
             auth_path = self.get_path(auth_path)
-        if params == None:
+        if params is None:
             params = {}
         else:
             params = params.copy()
-        if headers == None:
+        if headers is None:
             headers = {}
         else:
             headers = headers.copy()
@@ -1033,14 +1046,15 @@ class AWSQueryConnection(AWSAuthConnection):
                  is_secure=True, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None, host=None, debug=0,
                  https_connection_factory=None, path='/', security_token=None,
-                 validate_certs=True):
-        AWSAuthConnection.__init__(self, host, aws_access_key_id,
+                 validate_certs=True, profile_name=None):
+        super(AWSQueryConnection, self).__init__(host, aws_access_key_id,
                                    aws_secret_access_key,
                                    is_secure, port, proxy,
                                    proxy_port, proxy_user, proxy_pass,
                                    debug, https_connection_factory, path,
                                    security_token=security_token,
-                                   validate_certs=validate_certs)
+                                   validate_certs=validate_certs,
+                                   profile_name=profile_name)
 
     def _required_auth_capability(self):
         return []
