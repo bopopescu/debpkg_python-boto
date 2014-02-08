@@ -1,3 +1,9 @@
+python-boto (2.25.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Eric Evans <eevans@debian.org>  Fri, 07 Feb 2014 20:32:57 -0600
+
 python-boto (2.20.1-2) experimental; urgency=low
 
   * Run unit tests with autopkgtest.
