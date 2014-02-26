@@ -1,3 +1,9 @@
+python-boto (2.25.0-1iscoolent1) precise; urgency=low
+
+  * Rebuild for ubuntu precise
+
+ -- Benoit Dubertret <benoit.dubertret@iscool-e.com>  Wed, 26 Feb 2014 09:56:09 +0100
+
 python-boto (2.25.0-1) unstable; urgency=medium
 
   * New upstream release.
